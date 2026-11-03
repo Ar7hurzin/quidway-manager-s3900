@@ -66,6 +66,9 @@ Feche e inicie novamente o app após alterar configurações. No modo real, use 
 
 ## Documentação
 
+- [Como conectar e usar (TXT)](docs/como-conectar-e-usar.txt)
 - [Guia técnico (PDF)](docs/guia-tecnico.pdf) · [DOCX editável](docs/guia-tecnico.docx)
 - [Guia de planejamento (PDF)](docs/guia-de-planejamento.pdf) · [DOCX editável](docs/guia-de-planejamento.docx)
 - [Mockups conceituais](docs/mockups-conceituais.png)
+
+

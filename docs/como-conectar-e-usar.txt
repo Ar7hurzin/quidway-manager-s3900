@@ -1,0 +1,97 @@
+QUIDWAY MANAGER — COMO CONECTAR AO SWITCH E USAR
+Guia para a versão atual do projeto
+
+RESPOSTA DIRETA: ESTA VERSÃO JÁ TEM SUPORTE INICIAL A CONEXÃO SSH REAL, EM MODO SOMENTE LEITURA. Porém, a conexão ainda NÃO foi testada com o seu switch. O submodelo e o firmware do S3900 não foram identificados, então a compatibilidade não está confirmada.
+
+O que a versão atual faz em modo real:
+- Conecta ao endereço e à porta SSH configurados.
+- Exige validar a chave pública do switch antes da conexão.
+- Envia somente estes dois comandos fixos: display version e display vlan.
+- Mostra as respostas brutas no painel de Diagnóstico SSH.
+- Não aceita comandos digitados pelo navegador e não altera a configuração do switch.
+
+O que ainda não faz em modo real: interpretar e preencher o mapa de portas/VLANs, monitorar tráfego, salvar backup ou mudar configurações. A tela de demonstração contém dados fictícios. Se aparecer “Demonstração”, nada foi lido do equipamento.
+
+PRÉ-REQUISITOS
+1. O computador que roda o Quidway Manager deve conseguir alcançar o IP de gerenciamento do switch pela rede. Pode ser pela mesma LAN ou por uma rota de rede já configurada.
+2. O serviço SSH precisa estar habilitado no switch e existir uma conta autorizada para leitura. O aplicativo não habilita SSH nem cria usuários no switch.
+3. Você precisa saber o endereço IP, a porta SSH (normalmente 22, se assim estiver configurado), o usuário e o método de autenticação (senha ou chave privada).
+4. Não faça encaminhamento de portas no roteador para expor o switch ou o painel à internet.
+
+PASSO 1 — IDENTIFIQUE O EQUIPAMENTO E A REDE
+Quando estiver diante do switch, anote o modelo/submodelo completo da etiqueta, a versão de firmware, o IP de gerenciamento, a máscara/gateway e se SSH está habilitado. Use os meios administrativos já disponíveis no equipamento/rede. Os comandos para habilitar SSH variam conforme modelo e firmware; este guia não presume nem recomenda comandos de configuração sem identificar essa versão.
+
+Conecte o computador que hospedará o app à rede que alcança o IP de gerenciamento do switch. No PowerShell, verifique a rota SSH (troque o IP pelo real):
+
+    Test-NetConnection 192.168.1.2 -Port 22
+
+Procure TcpTestSucceeded : True. Se der False, ainda não é hora de configurar o app: confira IP, VLAN/rede de gerenciamento, rota, firewall e se o SSH está habilitado/escutando na porta correta. Ping sozinho não confirma que a porta SSH está acessível.
+
+PASSO 2 — PREPARE A CHAVE DO HOST SSH COM SEGURANÇA
+O Quidway Manager rejeita uma chave SSH desconhecida ou alterada. Isso protege contra conectar a um equipamento impostor. Obtenha a chave pública ou impressão digital do switch por um canal local confiável e compare-a presencialmente/por canal administrativo seguro.
+
+Se o Windows tiver o OpenSSH Client, você pode coletar a chave apresentada pelo IP para montar o arquivo known_hosts. Isso, sozinho, NÃO prova que a chave é legítima: compare a impressão digital coletada com a obtida pelo canal confiável antes de usar o arquivo.
+
+    ssh-keyscan -p 22 192.168.1.2 | Out-File -FilePath "$env:USERPROFILE\quidway-known_hosts" -Encoding ascii
+    ssh-keygen -lf "$env:USERPROFILE\quidway-known_hosts" -E sha256
+
+Se o nome/IP usado para conectar for diferente do que aparece no known_hosts, a validação pode falhar. Use o mesmo IP/nome em QM_SWITCH_HOST e no arquivo conhecido. Se a chave mudar após troca/reset do switch, pare e confirme a nova impressão digital antes de substituir o registro.
+
+PASSO 3 — CONFIGURE O APLICATIVO
+Abra o PowerShell na pasta do projeto QuidwayManager. Copie o exemplo de configuração local e abra-o para edição:
+
+    Copy-Item .\local-settings.example.ps1 .\local-settings.ps1
+    notepad .\local-settings.ps1
+
+No arquivo, retire o caractere # das linhas necessárias e preencha com os valores reais. Exemplo usando uma chave privada já criada e autorizada no switch (ajuste os caminhos):
+
+    $env:QM_MODE = 'real'
+    $env:QM_SWITCH_HOST = '192.168.1.2'
+    $env:QM_SWITCH_PORT = '22'
+    $env:QM_SWITCH_USER = 'qm-leitura'
+    $env:QM_KNOWN_HOSTS = "$env:USERPROFILE\quidway-known_hosts"
+    $env:QM_SSH_KEY_FILE = "$env:USERPROFILE\.ssh\quidway_manager"
+
+A chave privada fica no computador; não a envie para o switch, GitHub ou para outra pessoa. A chave pública correspondente deve estar autorizada no switch. O arquivo local-settings.ps1 é ignorado pelo Git, mas mesmo assim nunca coloque a senha nele.
+
+Se for usar senha em vez de chave, deixe QM_SSH_KEY_FILE sem valor e não grave a senha no arquivo. No mesmo PowerShell em que vai iniciar o app, peça a senha de forma mascarada e defina a variável para esta sessão:
+
+    $cred = Get-Credential -UserName 'qm-leitura' -Message 'Credenciais SSH do switch'
+    $env:QM_SWITCH_USER = $cred.UserName
+    $env:QM_SSH_PASSWORD = $cred.GetNetworkCredential().Password
+
+Use exatamente uma opção: chave privada OU senha. Não configure ambas. Ao encerrar o aplicativo, remova a senha desta sessão com:
+
+    Remove-Item Env:QM_SSH_PASSWORD -ErrorAction SilentlyContinue
+
+PASSO 4 — INICIE E USE O QUIDWAY MANAGER
+Ainda no PowerShell da pasta do projeto, execute:
+
+    .\start.ps1
+
+Na primeira execução, o script prepara o ambiente Python e as bibliotecas necessárias. Deixe o terminal aberto e acesse no navegador do próprio computador:
+
+    http://127.0.0.1:8787
+
+Confira se a interface mostra “Leitura SSH”/modo real, em vez de “Demonstração”. Clique em “Atualizar leitura”. Se funcionar, abra “Diagnóstico SSH”: devem aparecer as saídas brutas de display version e display vlan.
+
+Se aparecer erro, leia a mensagem do diagnóstico. Causas comuns: IP/rota/porta errados, SSH desabilitado, credencial ou permissão inválida, arquivo known_hosts ausente/incorreto, ou incompatibilidade entre os algoritmos SSH do firmware antigo e os aceitos pelo cliente atual. O aplicativo não reduz os algoritmos de segurança automaticamente. Não tente resolver desativando a verificação de chave ou enfraquecendo o SSH.
+
+Para encerrar, volte ao terminal e pressione Ctrl+C. Se usou senha, remova a variável como indicado acima.
+
+PASSO 5 — ACESSAR O PAINEL DE OUTRO LUGAR (OPCIONAL, VIA TAILSCALE)
+Primeiro confirme que o app funciona localmente. No computador que hospeda o app, conecte o Tailscale à sua tailnet e mantenha esse computador ligado e conectado à rede do switch. Com o Quidway Manager ativo, abra outro PowerShell na pasta do projeto e execute:
+
+    .\enable-tailnet.ps1
+
+Siga o endereço/instruções que o Tailscale mostrar. Em qualquer outro dispositivo, conecte-se à mesma tailnet e abra o endereço HTTPS privado mostrado por `tailscale serve status`. O computador hospedeiro precisa permanecer ligado, com o app e o Tailscale ativos. O Tailscale protege o acesso ao painel; o Quidway Manager ainda precisa alcançar o switch pela rede local do computador hospedeiro.
+
+Se o computador hospedeiro já tiver uma configuração Tailscale Serve, o script para sem substituí-la. Não use Tailscale Funnel nem abra porta no roteador para este painel.
+
+RESUMO DE COMPATIBILIDADE
+- Código: conector SSH real implementado para duas consultas fixas e somente leitura.
+- Equipamento: ainda sem conexão ou teste no seu Quidway S3900; compatibilidade com submodelo/firmware não confirmada.
+- Interface em modo real: mostra o diagnóstico bruto; os dados não são ainda convertidos em mapa de portas ou gráficos.
+- Segurança: exige chave de host previamente validada e uma credencial; não aceita comandos arbitrários nem altera o switch.
+- Se a resposta de `display version` e `display vlan` vier corretamente, isso confirma essas consultas nessa configuração. Ainda será necessário validar separadamente cada recurso futuro.
+
