@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0a1420">
+  <title>Quidway Manager</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="frame">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">Q</span><div><strong>Quidway Manager</strong><small>GERENCIAMENTO PRIVADO</small></div></div>
+      <div class="side-label">MENU</div>
+      <nav aria-label="Navegação principal">
+        <a class="nav-item active" href="#overview"><span>◈</span>Visão geral</a>
+        <a class="nav-item" href="#ports"><span>▦</span>Portas</a>
+        <a class="nav-item" href="#vlans"><span>⌘</span>VLANs</a>
+        <a class="nav-item" href="#monitoring"><span>⌁</span>Monitoramento</a>
+        <a class="nav-item" href="#diagnostics"><span>↗</span>Diagnóstico SSH</a>
+      </nav>
+      <div class="sidebar-note"><span class="pulse"></span><div><strong>Privado por padrão</strong><small>Planejado para Tailscale Serve</small></div></div>
+      <div class="sidebar-foot">S3900 · perfil ainda não validado</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar"><div><div class="eyebrow">PAINEL DE REDE <span>/</span> SWITCHES</div><h1>Visão geral</h1></div><div class="top-actions"><span id="mode-pill" class="mode-pill">CARREGANDO</span><button id="refresh" class="button button-primary"><span>↻</span> Atualizar leitura</button></div></header>
+      <div id="mode-banner" class="mode-banner" role="status"><span class="banner-icon">!</span><span>Carregando o modo da aplicação...</span></div>
+
+      <section id="overview" class="section device-row">
+        <div class="device-card card"><div class="device-icon">▤</div><div class="device-info"><div class="card-overline">EQUIPAMENTO</div><h2 id="device-name">Quidway S3900</h2><p id="device-model">Modelo e firmware aguardam identificação</p></div><div id="connection-state" class="connection-state"><i></i><span>Sem conexão</span></div></div>
+        <div class="mini-card card"><span class="mini-icon teal">◉</span><div class="card-overline">PORTAS COM LINK</div><strong id="ports-count">—</strong><small>Não interpretado</small></div>
+        <div class="mini-card card"><span class="mini-icon violet">⌘</span><div class="card-overline">VLANS</div><strong id="vlan-count">—</strong><small>Não interpretado</small></div>
+        <div class="mini-card card"><span class="mini-icon amber">◷</span><div class="card-overline">ÚLTIMA COLETA</div><strong id="last-read">—</strong><small>Sem leitura do switch</small></div>
+      </section>
+
+      <section class="section two-col">
+        <article id="ports" class="card panel-card">
+          <div class="panel-head"><div><div class="card-overline">PORTAS</div><h2>Mapa de interfaces</h2></div><span class="subtle-tag">Vista conceitual</span></div>
+          <p id="ports-note" class="panel-note">Numeração e quantidade variam conforme o submodelo. A vista só é preenchida com dados confirmados.</p>
+          <div id="port-grid" class="port-grid"><div class="empty-inline">Ainda sem leitura de interfaces.</div></div>
+          <div class="legend"><span><i class="dot dot-up"></i>Com link</span><span><i class="dot dot-down"></i>Sem link</span><span><i class="dot dot-unknown"></i>Sem leitura</span></div>
+        </article>
+        <article id="vlans" class="card panel-card">
+          <div class="panel-head"><div><div class="card-overline">SEGMENTAÇÃO</div><h2>VLANs</h2></div><span class="subtle-tag">Leitura somente</span></div>
+          <p class="panel-note">A associação de portas depende do formato que o firmware retornar.</p>
+          <div class="table-wrap"><table><thead><tr><th>ID</th><th>Nome</th><th>Portas</th><th>Origem</th></tr></thead><tbody id="vlan-body"><tr><td colspan="4" class="table-empty">Aguardando leitura.</td></tr></tbody></table></div>
+          <div class="callout">VLAN de camada 2 não significa, por si só, que exista roteamento entre redes.</div>
+        </article>
+      </section>
+
+      <section class="section two-col bottom-grid">
+        <article id="monitoring" class="card panel-card">
+          <div class="panel-head"><div><div class="card-overline">TRÁFEGO</div><h2>Monitoramento</h2></div><span class="subtle-tag">Sem amostras</span></div>
+          <p class="panel-note">Gráficos serão habilitados depois de confirmar contadores e um intervalo de coleta seguro.</p>
+          <div class="chart-placeholder"><div class="chart-grid"></div><div class="chart-empty"><span class="chart-glyph">⌁</span><strong>Sem dados históricos</strong><small>Esta interface não inventa métricas no modo real.</small></div></div>
+        </article>
+        <article id="diagnostics" class="card panel-card diagnostics-card">
+          <div class="panel-head"><div><div class="card-overline">CONEXÃO</div><h2>Diagnóstico SSH</h2></div><span class="ssh-badge">SSH</span></div>
+          <p id="ssh-message" class="panel-note">A conexão fica desativada até configurar o modo de leitura.</p>
+          <div id="outputs" class="outputs"><div class="empty-inline">As consultas permitidas são fixas e somente de leitura. Nenhum comando livre é aceito pela interface.</div></div>
+        </article>
+      </section>
+      <footer class="footer"><span>Quidway Manager · MVP somente leitura</span><span>Conexão local · acesso remoto previsto via tailnet</span></footer>
+    </main>
+  </div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
