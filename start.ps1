@@ -33,8 +33,21 @@ if (-not (Test-Path '.venv/Scripts/python.exe')) {
 }
 
 $python = Join-Path $PSScriptRoot '.venv/Scripts/python.exe'
-& $python -c 'import importlib.util,sys; sys.exit(0 if all(importlib.util.find_spec(x) for x in ("flask","paramiko","waitress","serial")) else 1)' 2>$null
-if ($LASTEXITCODE -ne 0) {
+$probeCode = "import importlib.util,sys; sys.exit(0 if all(importlib.util.find_spec(x) for x in ('flask','paramiko','waitress','serial')) else 1)"
+$probeInfo = New-Object System.Diagnostics.ProcessStartInfo
+$probeInfo.FileName = $python
+$probeInfo.Arguments = '-c "' + $probeCode + '"'
+$probeInfo.UseShellExecute = $false
+$probeInfo.CreateNoWindow = $true
+$probeInfo.RedirectStandardOutput = $true
+$probeInfo.RedirectStandardError = $true
+$probeProcess = [System.Diagnostics.Process]::Start($probeInfo)
+$null = $probeProcess.StandardOutput.ReadToEnd()
+$probeError = $probeProcess.StandardError.ReadToEnd()
+$probeProcess.WaitForExit()
+$dependenciesMissing = $probeProcess.ExitCode -ne 0
+$probeProcess.Dispose()
+if ($dependenciesMissing) {
     Write-Host 'Preparando as bibliotecas do Quidway Manager...' -ForegroundColor Cyan
     & $python -m pip install --disable-pip-version-check -r requirements.txt
     if ($LASTEXITCODE -ne 0) { throw 'Não foi possível preparar as bibliotecas. Confira sua conexão e tente novamente.' }

@@ -7,6 +7,7 @@ import threading
 import time
 
 from serial_readonly import SerialSettings
+from switch_text import decode_switch_text
 
 
 class SerialCLIError(RuntimeError):
@@ -74,7 +75,7 @@ class SerialCLISession:
 
     @staticmethod
     def _decode(raw: bytes) -> str:
-        return raw.decode("utf-8", errors="replace").replace("\r", "").replace("\x00", "")
+        return decode_switch_text(raw).replace("\r", "").replace("\x00", "")
 
     def open(self, settings: SerialSettings) -> dict[str, object]:
         with self._lock:

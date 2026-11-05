@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from serial_readonly import SerialReadOnlyError, SerialSettings
 from switch_config import ConfigurationError, ConfigurationPlan
+from switch_text import decode_switch_text
 
 
 PROMPT = re.compile(rb"(?m)(?:<[^>\r\n]+>|\[[^\]\r\n]+\])\s*$")
@@ -46,7 +47,7 @@ def _read_response(connection, timeout_seconds: int, allow_confirmation: bool = 
 def _exchange(connection, command: str, settings: SerialSettings, allow_confirmation: bool = False) -> tuple[str, bool]:
     connection.write(command.encode("ascii") + b"\r\n")
     raw, confirmation = _read_response(connection, settings.timeout_seconds, allow_confirmation=allow_confirmation)
-    text = raw.decode("utf-8", errors="replace").replace("\r", "").strip()
+    text = decode_switch_text(raw).replace("\r", "").strip()
     lower = text.lower()
     if not command.lower().startswith("display ") and any(error.decode("ascii").lower() in lower for error in ERRORS):
         raise ConfigurationError(f"O switch rejeitou um comando do plano: {command}. O restante não foi enviado; confira a configuração em execução.")
@@ -62,10 +63,29 @@ def _check_target(connection, settings: SerialSettings) -> str:
 
 def _existing_vlans(connection, settings: SerialSettings) -> set[int]:
     response, _ = _exchange(connection, "display vlan", settings)
-    vlan_ids = {
+    vlan_ids: set[int] = set()
+
+    # VRP 3.10 can report the VLAN inventory as a comma-separated list, e.g.
+    # "1 (default), 10". Parse that section separately so every ID is kept.
+    inventory = re.search(r"(?i)following VLAN exist\(s\):\s*", response)
+    if inventory:
+        for line in response[inventory.end():].splitlines():
+            line = line.strip()
+            if not line or line.startswith(("<", "[")):
+                break
+            if re.fullmatch(r"\d{1,4}(?:\s*\([^)]*\))?(?:\s*,\s*\d{1,4}(?:\s*\([^)]*\))?)*", line):
+                vlan_ids.update(int(value) for value in re.findall(r"\d{1,4}", line))
+
+    # Keep compatibility with tabular/detail formats used by other S3900
+    # firmware builds and command output variants.
+    vlan_ids.update(
         int(match.group(1))
         for match in re.finditer(r"(?mi)^\s*(\d{1,4})(?:\s*\(|\s+(?:common|static|dynamic|default)\b)", response)
-    }
+    )
+    vlan_ids.update(
+        int(match.group(1))
+        for match in re.finditer(r"(?mi)^\s*VLAN\s+ID\s*:\s*(\d{1,4})\b", response)
+    )
     if not vlan_ids:
         raise ConfigurationError("Não consegui interpretar a lista atual de VLANs; nenhuma alteração foi enviada.")
     return vlan_ids

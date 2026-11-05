@@ -242,8 +242,6 @@ async function previewConfiguration(payload) {
       const item = document.createElement("li"); item.textContent = warning; return item;
     }));
     $("preview-commands").textContent = result.commands.join("\n");
-    $("required-confirmation").textContent = result.confirmation;
-    $("config-confirmation").value = "";
     $("config-result").textContent = "";
     $("config-preview").hidden = false;
     $("config-preview").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -304,19 +302,12 @@ $("route-form").addEventListener("submit", event => {
 $("save-config-button").addEventListener("click", () => previewConfiguration({ action: "save" }));
 
 $("backup-button").addEventListener("click", async () => {
-  const confirmation = $("backup-confirmation").value.trim();
   const resultBox = $("config-result");
   resultBox.classList.remove("error");
   resultBox.textContent = "";
-  if (confirmation !== "EXPORTAR BACKUP") {
-    resultBox.classList.add("error");
-    resultBox.textContent = "Digite exatamente EXPORTAR BACKUP para confirmar o download. O arquivo pode conter segredos.";
-    return;
-  }
   try {
     const response = await fetch("/api/config/backup", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ confirmation }), cache: "no-store",
+      method: "POST", headers: { "Accept": "application/json" }, cache: "no-store",
     });
     if (!response.ok) {
       const error = await response.json(); throw new Error(error.error || "Falha ao exportar backup.");
@@ -337,17 +328,24 @@ $("backup-button").addEventListener("click", async () => {
 
 function updateApplyAvailability() {
   if (!$("apply-config-button")) return;
-  const matches = pendingConfigPreview && $("config-confirmation").value.trim() === pendingConfigPreview.confirmation;
-  const backupRequired = $("backup-confirmed").checked;
-  $("apply-config-button").disabled = !configStatus.writes_enabled || !matches || !backupRequired;
+  const button = $("apply-config-button");
+  const hint = $("apply-hint");
+  button.disabled = !configStatus.writes_enabled || !pendingConfigPreview;
+  if (!configStatus.writes_enabled) {
+    hint.textContent = configStatus.message || "O envio de alterações está desabilitado na configuração local.";
+  } else if (!pendingConfigPreview) {
+    hint.textContent = "Gere uma prévia; depois o botão Aplicar fica disponível.";
+  } else {
+    hint.textContent = "Prévia pronta. Backup é opcional e recomendado; revise os comandos antes de aplicar.";
+  }
+  button.title = button.disabled ? hint.textContent : "Aplicar a operação mostrada na prévia";
 }
-
-$("config-confirmation").addEventListener("input", updateApplyAvailability);
-$("backup-confirmed").addEventListener("change", updateApplyAvailability);
 
 $("apply-config-button").addEventListener("click", async () => {
   if (!pendingConfigPreview || !configStatus.writes_enabled) return;
   const applyButton = $("apply-config-button");
+  const previewToApply = pendingConfigPreview;
+  pendingConfigPreview = null;
   applyButton.disabled = true;
   applyButton.textContent = "Enviando...";
   const resultBox = $("config-result");
@@ -357,9 +355,7 @@ $("apply-config-button").addEventListener("click", async () => {
     const response = await fetch("/api/config/apply", {
       method: "POST", headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify({
-        token: pendingConfigPreview.token,
-        confirmation: $("config-confirmation").value.trim(),
-        backup_confirmed: $("backup-confirmed").checked,
+        token: previewToApply.token,
       }), cache: "no-store",
     });
     const result = await response.json();

@@ -11,7 +11,7 @@ Painel local em português para observar e configurar, de forma controlada, um s
 - Modo SSH configurável com validação estrita da chave conhecida. O único conjunto permitido é `display version` e `display vlan`.
 - Modo serial local implementado para enviar somente `display version` e `display vlan`; requer fechar Tera Term/MobaXterm antes da coleta. O console serial e essas respostas foram observados no terminal do usuário, não verificados pelo Manager nesta sessão.
 - Área Configuração com prévia de comandos para VLANs, portas access/trunk/hybrid, estado/descrição de porta, nome do switch, IP de gestão, backup e salvamento.
-- Aplicação de mudanças por série serial usa operações tipadas, confirmação textual de cada plano e verificação do modelo/release antes de enviar. Gravações ficam desabilitadas por padrão por `QM_ENABLE_CONFIG_WRITES=false`.
+- Aplicação de mudanças por série serial usa operações tipadas, prévia de cada plano e verificação do modelo/release antes de enviar. Depois da prévia, um clique explícito aplica a operação. Gravações ficam desabilitadas por padrão por `QM_ENABLE_CONFIG_WRITES=false`.
 - Verificação estrita de chave SSH conhecida. Chave nova ou alterada é rejeitada.
 - Uma credencial por vez: senha ou chave privada. A senha não é solicitada nem gravada pelo painel.
 - Serviço web preso a `127.0.0.1`; cabeçalhos impedem cache do diagnóstico no navegador.
@@ -63,7 +63,7 @@ Inicie com `.\start.ps1` e use **Atualizar leitura**. O primeiro uso instala PyS
 
 ## Área Configuração
 
-A tela cria prévias para operações de VLAN, modo/VLAN de portas, descrição e estado administrativo, nome do switch, IP de gestão e rotas estáticas IPv4. O painel Cobertura indica quais grupos têm controles e quais aguardam validação. Cada prévia lista os comandos, riscos e uma frase de confirmação. A VLAN 1 não pode ser removida pela interface. Backup é exportado sob demanda; o arquivo bruto pode conter segredos. Salvar no switch é uma ação separada, exige que o usuário confirme que baixou um backup e digite a confirmação mostrada.
+A tela cria prévias para operações de VLAN, modo/VLAN de portas, descrição e estado administrativo, nome do switch, IP de gestão e rotas estáticas IPv4. O painel Cobertura indica quais grupos têm controles e quais aguardam validação. Cada prévia lista os comandos e riscos; um clique explícito aplica o plano. A VLAN 1 não pode ser removida pela interface. Backup é opcional e exportado sob demanda; o arquivo bruto pode conter segredos. Salvar no switch continua sendo uma ação separada com sua própria prévia.
 
 As mudanças entram primeiro na configuração em execução do switch; salvar é uma etapa separada. O envio permanece bloqueado enquanto `QM_ENABLE_CONFIG_WRITES=false`. Para habilitar, o operador precisa revisar o código e validar as operações com o console e o release instalado; a versão 0002 não foi usada para testar comandos de escrita. O Manager ainda não cobre todas as funções do switch, então não substitui completamente a CLI nesta etapa. A área não oferece comandos livres e não importa arquivo arbitrário para executar.
 

@@ -7,6 +7,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from switch_text import decode_switch_text
+
 
 class SSHReadOnlyError(RuntimeError):
     """Safe, user-facing connection or collection failure."""
@@ -70,7 +72,7 @@ def _read_until_prompt(channel, timeout_seconds: int, max_bytes: int = 256_000) 
 
 
 def _clean_output(raw: bytes, command: str) -> str:
-    text = raw.decode("utf-8", errors="replace").replace("\r", "")
+    text = decode_switch_text(raw).replace("\r", "")
     lines = [line.rstrip() for line in text.splitlines()]
     # Remove the command echo and final prompt without changing the device response.
     if lines and command in lines[0]:

@@ -7,7 +7,7 @@
   <meta name="csrf-token" content="{{ csrf_token }}">
   <title>Quidway Manager</title>
   <script>document.documentElement.dataset.page = location.pathname === "/configuracao" ? "configuration" : location.pathname === "/monitoramento" ? "monitoring" : location.pathname === "/sistema" ? "system" : location.pathname === "/cli" ? "cli" : "dashboard";</script>
-  <link rel="stylesheet" href="/static/styles.css?v=20261105-4">
+  <link rel="stylesheet" href="/static/styles.css?v=20261105-6">
 </head>
 <body>
   <div class="frame">
@@ -15,10 +15,10 @@
       <div class="brand"><span class="brand-mark">Q</span><div><strong>Quidway Manager</strong><small>GERENCIAMENTO PRIVADO</small></div></div>
       <nav class="main-nav" aria-label="Navegação principal">
         <a class="nav-item" data-page-link="dashboard" href="/"><span>◈</span>Dashboard</a>
-        <a class="nav-item" data-page-link="system" href="/sistema"><span>▤</span>Sistema</a>
-        <a class="nav-item" data-page-link="monitoring" href="/monitoramento#ports"><span>▦</span>Switching</a>
         <a class="nav-item" data-page-link="configuration" href="/configuracao#configuration"><span>⚙</span>Configuração</a>
+        <a class="nav-item" data-page-link="monitoring" href="/monitoramento#ports"><span>▦</span>Switching</a>
         <a class="nav-item" data-page-link="cli" href="/cli"><span>⌨</span>CLI</a>
+        <a class="nav-item" data-page-link="system" href="/sistema"><span>▤</span>Sistema</a>
       </nav>
       <span class="header-device-tag"><i class="pulse"></i>Quidway 3900-SI</span>
     </aside>
@@ -93,12 +93,12 @@
 
       <section id="configuration" class="section configuration-section">
         <div class="section-heading"><div><div class="card-overline">GERENCIAMENTO DO EQUIPAMENTO</div><h2>Configuração do switch</h2></div><span id="config-state" class="subtle-tag">Carregando</span></div>
-        <div id="config-banner" class="config-banner">As alterações precisam de prévia e confirmação. Nenhuma mudança é enviada automaticamente.</div>
+        <div id="config-banner" class="config-banner">Revise a prévia e os avisos; cada operação só é enviada quando você clicar em Aplicar no switch.</div>
 
         <div class="config-grid">
           <article id="coverage-card" class="card panel-card coverage-card">
             <div class="panel-head"><div><div class="card-overline">ESCOPO DE CONFIGURAÇÃO</div><h2>O que o Manager cobre</h2></div><span class="subtle-tag">S3900-SI · 28 portas</span></div>
-            <p class="panel-note">A configuração é organizada por tarefas. Cada operação disponível gera uma prévia, exige backup e confirmação. O catálogo será ampliado por recurso após validar a sintaxe do VRP 3.10(CN) RELEASE 0002.</p>
+            <p class="panel-note">A configuração é organizada por tarefas. Cada operação gera uma prévia e aguarda um clique em Aplicar. O backup fica disponível como opção recomendada. O catálogo será ampliado por recurso após validar a sintaxe do VRP 3.10(CN) RELEASE 0002.</p>
             <div class="coverage-grid">
               <div><b class="coverage-live">● Disponível na interface</b><span>VLANs, access/trunk/hybrid, descrição/estado das portas, nome do switch, IP de gestão, rotas estáticas, backup e salvar.</span></div>
               <div><b class="coverage-validate">◷ Pendente de validação</b><span>Agregação de links, STP/MSTP, espelhamento, IGMP/Voice VLAN, DHCP relay, ACL/QoS, AAA/SSH, SNMP, NTP e syslog.</span></div>
@@ -164,9 +164,7 @@
             <div class="panel-head"><div><div class="card-overline">ARQUIVOS</div><h2>Backup e persistência</h2></div><span class="subtle-tag">Ações separadas</span></div>
             <p class="panel-note">O backup bruto pode conter senhas, chaves ou hashes. Baixe e guarde o arquivo em local privado.</p>
             <div class="config-form">
-              <label>Digite EXPORTAR BACKUP<input id="backup-confirmation" autocomplete="off" placeholder="EXPORTAR BACKUP"></label>
               <button id="backup-button" class="button button-secondary" type="button">Baixar configuração atual</button>
-              <label class="confirm-check"><input id="backup-confirmed" type="checkbox"> Baixei o backup e revisei as mudanças antes de aplicar.</label>
               <button id="save-config-button" class="button button-primary" type="button">Pré-visualizar salvar no switch</button>
             </div>
           </article>
@@ -176,7 +174,8 @@
           <div class="panel-head"><div><div class="card-overline">PRÉVIA DA OPERAÇÃO</div><h2 id="preview-summary">Revise antes de aplicar</h2></div><span class="subtle-tag">Expira em 5 minutos</span></div>
           <ul id="preview-warnings" class="warning-list"></ul>
           <pre id="preview-commands" class="command-preview"></pre>
-          <div class="config-confirm-row"><label>Para confirmar, digite <code id="required-confirmation"></code><input id="config-confirmation" autocomplete="off"></label><button id="apply-config-button" class="button button-primary" type="button" disabled>Aplicar no switch</button></div>
+          <div class="config-confirm-row"><span class="panel-note">Revise o resumo, os avisos e os comandos acima. Um clique envia esta operação ao switch.</span><button id="apply-config-button" class="button button-primary" type="button" disabled>Aplicar no switch</button></div>
+          <p id="apply-hint" class="apply-hint" role="status" aria-live="polite">Gere uma prévia para ver os requisitos de envio.</p>
           <div id="config-result" class="config-result" role="status"></div>
         </article>
       </section>
@@ -195,9 +194,9 @@
           <p id="cli-result" class="config-result" role="status"></p>
         </article>
       </section>
-      <footer class="footer"><span>Quidway Manager · configuração com prévia e confirmação</span><span>Console local · acesso remoto privado via tailnet</span></footer>
+      <footer class="footer"><span>Quidway Manager · configuração com prévia</span><span>Console local · acesso remoto privado via tailnet</span></footer>
     </main>
   </div>
-  <script src="/static/app.js?v=20261105-7" defer></script>
+  <script src="/static/app.js?v=20261105-9" defer></script>
 </body>
 </html>

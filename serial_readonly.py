@@ -6,6 +6,8 @@ import re
 import time
 from dataclasses import dataclass
 
+from switch_text import decode_switch_text
+
 
 class SerialReadOnlyError(RuntimeError):
     """Safe, user-facing serial connection or collection failure."""
@@ -59,7 +61,7 @@ def _read_until_prompt(connection, timeout_seconds: int, max_bytes: int = 256_00
 
 
 def _clean_output(raw: bytes, command: str) -> str:
-    text = raw.decode("utf-8", errors="replace").replace("\r", "")
+    text = decode_switch_text(raw).replace("\r", "")
     lines = [line.rstrip() for line in text.splitlines()]
     if lines and command in lines[0]:
         lines = lines[1:]

@@ -415,7 +415,7 @@ def configuration_status():
         "available": serial_mode,
         "writes_enabled": enabled,
         "message": (
-            "A configuração por console está habilitada com confirmação por operação."
+            "A configuração por console está habilitada com prévia por operação."
             if enabled else
             "Prévia e validação disponíveis. O envio de mudanças está bloqueado por QM_ENABLE_CONFIG_WRITES=false."
             if serial_mode else
@@ -436,7 +436,7 @@ def configuration_preview():
         return jsonify({
             "ok": True, "token": token, "action": plan.action,
             "summary": plan.summary, "commands": list(plan.commands),
-            "warnings": list(plan.warnings), "confirmation": plan.confirmation,
+            "warnings": list(plan.warnings),
             "expires_in_seconds": 300,
         })
     except ConfigurationError as exc:
@@ -453,9 +453,7 @@ def configuration_apply():
         return jsonify({"ok": False, "error": "Encerre a sessão CLI antes de aplicar uma configuração pela área guiada."}), 409
     try:
         payload = request.get_json(silent=True) or {}
-        if payload.get("backup_confirmed") is not True:
-            return jsonify({"ok": False, "error": "Baixe um backup e marque a confirmação antes de enviar qualquer mudança."}), 400
-        plan = consume_preview(payload.get("token"), payload.get("confirmation"))
+        plan = consume_preview(payload.get("token"))
         outputs = execute_plan(serial_settings(), plan)
         return jsonify({
             "ok": True, "summary": plan.summary,
@@ -472,9 +470,6 @@ def configuration_backup():
         return jsonify({"ok": False, "error": "O backup requer o modo serial local."}), 409
     if cli_session.connected:
         return jsonify({"ok": False, "error": "Encerre a sessão CLI antes de exportar o backup serial."}), 409
-    payload = request.get_json(silent=True) or {}
-    if payload.get("confirmation") != "EXPORTAR BACKUP":
-        return jsonify({"ok": False, "error": "Confirme digitando EXPORTAR BACKUP."}), 400
     try:
         content, filename = export_current_configuration(serial_settings())
         return send_file(

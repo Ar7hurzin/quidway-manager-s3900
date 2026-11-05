@@ -10,7 +10,7 @@ A área **Configuração** cria prévias tipadas para estas operações:
 - Roteamento: adicionar ou excluir rota estática IPv4, com destino/prefixo/próximo salto validados e prévia explícita.
 - Arquivos: exportar a configuração atual sob demanda e salvar separadamente as mudanças em execução no switch.
 
-O app não recebe comandos livres do navegador. Cada ação tem validação de entradas, prévia dos comandos, avisos, frase de confirmação exata, token de uso único com validade de cinco minutos, checagem do modelo/release e confirmação do backup antes de enviar mudanças. A alteração do IP avisa que o gerenciamento de rede pode cair. O app usa a porta serial local.
+O app não recebe comandos livres do navegador. Cada ação tem validação de entradas, prévia dos comandos, avisos e token de uso único com validade de cinco minutos. Depois de revisar a prévia, um clique envia a operação; o backup é opcional e recomendado, mas não bloqueia o envio. A checagem do modelo/release continua obrigatória. A alteração do IP avisa que o gerenciamento de rede pode cair. O app usa a porta serial local.
 
 ### Terminal CLI integrado
 
@@ -29,9 +29,9 @@ As formas dos comandos se baseiam no Huawei Quidway S3900 Series Command Manual,
 1. Mantenha o cabo console ligado e feche Tera Term/MobaXterm.
 2. No painel, abra **Configuração** e preencha uma ação.
 3. Use **Pré-visualizar**. Leia cada comando e os avisos; a prévia não altera o switch.
-4. Baixe um backup com a confirmação `EXPORTAR BACKUP`. O arquivo bruto pode incluir credenciais ou hashes; armazene-o em local privado.
+4. Opcionalmente, baixe um backup antes de aplicar. O arquivo bruto pode incluir credenciais ou hashes; armazene-o em local privado.
 5. Antes de habilitar gravações, confirme a sintaxe do firmware instalado. O módulo consulta `display version` e `display vlan` antes de enviar qualquer plano e recusa um equipamento fora do perfil conhecido.
-6. Digite a frase exata mostrada na prévia e confirme o backup. Cada plano é usado uma vez e expira em cinco minutos.
+6. Revise a prévia e clique em **Aplicar no switch**. Cada plano é usado uma vez e expira em cinco minutos.
 7. As mudanças entram em execução imediatamente. A ação **Salvar configuração** é separada e grava as mudanças no arquivo de inicialização; faça novo backup e revise antes de salvar.
 
 ## Bloqueio de gravações

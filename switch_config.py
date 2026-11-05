@@ -22,7 +22,6 @@ class ConfigurationPlan:
     summary: str
     commands: tuple[str, ...]
     warnings: tuple[str, ...]
-    confirmation: str
 
 
 def _vlan_id(value: object) -> int:
@@ -95,13 +94,13 @@ def build_plan(payload: object) -> ConfigurationPlan:
         if name:
             commands.append(f"name {_safe_text(name, 'nome da VLAN')}")
         commands.extend(("quit", "return"))
-        return ConfigurationPlan(action, f"Criar VLAN {vlan}" + (f" ({name})" if name else ""), tuple(commands), tuple(warnings), f"APLICAR VLAN {vlan}")
+        return ConfigurationPlan(action, f"Criar VLAN {vlan}" + (f" ({name})" if name else ""), tuple(commands), tuple(warnings))
 
     if action == "rename_vlan":
         vlan = _vlan_id(payload.get("vlan_id"))
         name = _safe_text(payload.get("name"), "nome da VLAN")
         commands = ("system-view", f"vlan {vlan}", f"name {name}", "quit", "return")
-        return ConfigurationPlan(action, f"Alterar nome da VLAN {vlan} para {name}", commands, tuple(warnings), f"APLICAR VLAN {vlan}")
+        return ConfigurationPlan(action, f"Alterar nome da VLAN {vlan} para {name}", commands, tuple(warnings))
 
     if action == "delete_vlan":
         vlan = _vlan_id(payload.get("vlan_id"))
@@ -109,7 +108,7 @@ def build_plan(payload: object) -> ConfigurationPlan:
             raise ConfigurationError("A VLAN 1 padrão é protegida e não pode ser excluída pela interface.")
         warnings.extend(("A exclusão remove a VLAN e pode interromper todos os dispositivos associados.", "Confira portas e VLAN de gerenciamento antes de continuar."))
         commands = ("system-view", f"undo vlan {vlan}", "return")
-        return ConfigurationPlan(action, f"Excluir VLAN {vlan}", commands, tuple(warnings), f"EXCLUIR VLAN {vlan}")
+        return ConfigurationPlan(action, f"Excluir VLAN {vlan}", commands, tuple(warnings))
 
     if action in {"set_access_port", "set_trunk_port", "set_hybrid_port", "set_port_description", "set_port_state"}:
         number, interface = _port(payload.get("port"))
@@ -160,12 +159,12 @@ def build_plan(payload: object) -> ConfigurationPlan:
             summary = f"{('Ativar' if state == 'up' else 'Desativar')} porta {number}"
             if state == "down":
                 warnings.append("Desativar a porta interrompe imediatamente a conexão física dos dispositivos ligados a ela.")
-        return ConfigurationPlan(action, summary, commands, tuple(warnings), f"APLICAR PORTA {number}")
+        return ConfigurationPlan(action, summary, commands, tuple(warnings))
 
     if action == "set_sysname":
         name = _safe_text(payload.get("name"), "nome do equipamento")
         commands = ("system-view", f"sysname {name}", "return")
-        return ConfigurationPlan(action, f"Alterar nome do switch para {name}", commands, tuple(warnings), f"APLICAR NOME {name}")
+        return ConfigurationPlan(action, f"Alterar nome do switch para {name}", commands, tuple(warnings))
 
     if action == "set_management_ip":
         vlan = _vlan_id(payload.get("vlan_id"))
@@ -178,7 +177,7 @@ def build_plan(payload: object) -> ConfigurationPlan:
         mask = str(interface.network.netmask)
         commands = ("system-view", f"interface Vlan-interface {vlan}", f"ip address {interface.ip} {mask}", "quit", "return")
         warnings.extend(("Esta alteração troca o endereço de gestão do switch. A sessão remota pode cair; use o console local e planeje o novo endereço antes de aplicar.", "O endereço anterior não é restaurado automaticamente."))
-        return ConfigurationPlan(action, f"Alterar IP de gestão da VLAN {vlan} para {interface.ip}/{interface.network.prefixlen}", commands, tuple(warnings), f"APLICAR IP {interface.ip}")
+        return ConfigurationPlan(action, f"Alterar IP de gestão da VLAN {vlan} para {interface.ip}/{interface.network.prefixlen}", commands, tuple(warnings))
 
     if action in {"add_static_route", "delete_static_route"}:
         try:
@@ -192,18 +191,16 @@ def build_plan(payload: object) -> ConfigurationPlan:
         if action == "add_static_route":
             commands = ("system-view", route, "return")
             summary = f"Adicionar rota estática para {network} via {next_hop}"
-            confirmation = f"ADICIONAR ROTA {network}"
             warnings.extend(("A rota altera o encaminhamento IPv4 e pode interromper o gerenciamento remoto se o destino ou próximo salto estiver incorreto.", "Este S3900-SI oferece recursos de roteamento limitados em comparação ao modelo EI. Confirme a topologia e a compatibilidade no firmware instalado."))
         else:
             commands = ("system-view", f"undo {route}", "return")
             summary = f"Excluir rota estática para {network} via {next_hop}"
-            confirmation = f"EXCLUIR ROTA {network}"
             warnings.extend(("A exclusão pode remover o caminho usado por redes e serviços remotos.", "Confira a tabela de rotas e mantenha o console serial disponível."))
-        return ConfigurationPlan(action, summary, commands, tuple(warnings), confirmation)
+        return ConfigurationPlan(action, summary, commands, tuple(warnings))
 
     if action == "save":
         warnings.append("Salvar grava a configuração atual no arquivo de inicialização do switch; confirme depois de revisar as mudanças em execução.")
-        return ConfigurationPlan(action, "Salvar a configuração atual no switch", ("save",), tuple(warnings), "SALVAR CONFIGURACAO")
+        return ConfigurationPlan(action, "Salvar a configuração atual no switch", ("save",), tuple(warnings))
 
     raise ConfigurationError("Operação de configuração não reconhecida.")
 
@@ -221,13 +218,10 @@ def issue_preview(plan: ConfigurationPlan, lifetime_seconds: int = 300) -> str:
     return token
 
 
-def consume_preview(token: object, confirmation: object) -> ConfigurationPlan:
-    if not isinstance(token, str) or not isinstance(confirmation, str):
-        raise ConfigurationError("Prévia expirada ou confirmação ausente. Gere uma nova prévia.")
+def consume_preview(token: object) -> ConfigurationPlan:
+    if not isinstance(token, str):
+        raise ConfigurationError("Prévia ausente. Gere uma nova prévia.")
     entry = _PREVIEWS.pop(token, None)
     if not entry or entry[0] < time.monotonic():
         raise ConfigurationError("A prévia expirou ou já foi usada. Gere uma nova prévia.")
-    plan = entry[1]
-    if confirmation.strip() != plan.confirmation:
-        raise ConfigurationError(f"Digite exatamente: {plan.confirmation}")
-    return plan
+    return entry[1]
