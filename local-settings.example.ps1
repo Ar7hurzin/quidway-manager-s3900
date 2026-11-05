@@ -1,7 +1,19 @@
-﻿# Copie este arquivo para local-settings.ps1 para habilitar o acesso SSH real.
+# Copie este arquivo para local-settings.ps1 para habilitar uma conexão real.
 # O modo demonstração é usado quando QM_MODE não é definido.
 # Não compartilhe local-settings.ps1 nem grave senhas neste arquivo.
 
+# Opção de console local: cabo conectado ao computador e Tera Term/MobaXterm fechado.
+# Configure QM_SERIAL_BAUD com a mesma velocidade usada na sessão de console.
+# $env:QM_MODE = 'serial'
+# $env:QM_SERIAL_PORT = 'COM9'
+# $env:QM_SERIAL_BAUD = '9600'
+# Gravações no switch começam bloqueadas; habilite só após revisar e validar o release.
+# $env:QM_ENABLE_CONFIG_WRITES = 'false'
+
+# Configure o login uma vez executando .\configure-login.ps1.
+# O assistente grava usuário, hash da senha e chave de sessão em local-settings.ps1.
+
+# Opção de rede SSHv2: configure apenas se o firmware aceitar os algoritmos SSH atuais.
 # $env:QM_MODE = 'real'
 # $env:QM_SWITCH_HOST = 'IP_DE_GESTAO_DO_SWITCH'
 # $env:QM_SWITCH_PORT = '22'
