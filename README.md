@@ -110,3 +110,7 @@ Feche e inicie novamente o app após alterar configurações. No modo SSH, use *
 - [Mockups conceituais](docs/mockups-conceituais.png)
 
 
+
+## Arquivo histórico
+
+O diretório `archives/` guarda o ZIP de código exportado anteriormente. Ele pode estar defasado em relação à versão atual do projeto; o conteúdo atualizado está nos arquivos versionados na raiz e em `static/` e `docs/`.

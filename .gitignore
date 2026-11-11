@@ -1,16 +1,27 @@
+# Local data and credentials
+.env
+.env.*
+!.env.example
+local-settings.ps1
+*.db
+*.sqlite
+*.sqlite3
+*.session
+*.session-*
+instance/
+logs/
+backups/
+*.log
+
+# Python and tooling
 .venv/
+venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-instance/
-local-settings.ps1
-.env
-.env.*
-!.env.example
-logs/
-backups/
-*.log
+
+# OS files
 .DS_Store
 Thumbs.db
