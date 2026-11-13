@@ -112,3 +112,13 @@ body{font-size:14px}.sidebar{background:#fff;box-shadow:0 2px 10px #17324d0e;bor
 #virtual-details[hidden]{display:none} #virtual-details pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0 16px;font:12px/1.5 Consolas,monospace} #virtual-details h3{font-size:13px;margin-top:12px}
 
 .config-feedback{padding:10px 12px;margin:12px 0 0;border:1px solid #88c69f;background:#edf8f1;color:#166b3b;border-radius:5px;font-size:13px;line-height:1.5}.config-feedback.error{background:#fff1f1;border-color:#d79aa0;color:#ad2938}
+
+/* Physical dashboard: show the same live switching map on Dashboard. */
+.physical-only{display:none}
+html[data-mode="serial"] .physical-only{display:block}
+html[data-mode="serial"][data-page="dashboard"] .switching-row{display:grid}
+html[data-mode="serial"] .port{cursor:pointer;font:inherit}
+html[data-mode="serial"] .port.unknown{background:#fff7e5;border-color:#d9bb7d;color:#805400}
+html[data-mode="serial"] .port.unknown .port-state{color:#805400}
+.port-detail{white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;background:#f2f5f8;border:1px solid #cbd6e1;border-radius:6px}
+@media(max-width:900px){html[data-mode="serial"][data-page="dashboard"] .switching-row{grid-template-columns:1fr}}
