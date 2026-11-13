@@ -12,7 +12,7 @@ from urllib.request import urlopen
 ROOT = Path(__file__).resolve().parent
 SETTINGS = Path(os.environ.get('QM_SETTINGS_FILE', ROOT / 'local-settings.ps1')).expanduser()
 AUTH = {'QM_AUTH_USERNAME', 'QM_AUTH_PASSWORD_HASH', 'QM_SECRET_KEY'}
-ALLOWED = AUTH | {'QM_MODE', 'QM_SERIAL_PORT', 'QM_SERIAL_BAUD', 'QM_WEB_PORT', 'QM_ENABLE_CONFIG_WRITES', 'QM_ENABLE_CLI', 'QM_HTTPS_ONLY', 'QM_CONNECT_TIMEOUT', 'QM_SWITCH_HOST', 'QM_SWITCH_PORT', 'QM_SWITCH_USER', 'QM_KNOWN_HOSTS', 'QM_SSH_KEY_FILE'}
+ALLOWED = AUTH | {'QM_MODE', 'QM_SERIAL_PORT', 'QM_SERIAL_BAUD', 'QM_WEB_PORT', 'QM_ENABLE_CONFIG_WRITES', 'QM_ENABLE_CLI', 'QM_HTTPS_ONLY', 'QM_CONNECT_TIMEOUT', 'QM_SWITCH_HOST', 'QM_SWITCH_PORT', 'QM_SWITCH_USER', 'QM_KNOWN_HOSTS', 'QM_SSH_KEY_FILE', 'QM_VIRTUAL_STATE'}
 
 def load_settings():
     values = {}
@@ -48,8 +48,8 @@ def main():
         if configure() != 0:
             return 2
         os.environ.update({k: v for k, v in load_settings().items() if k in AUTH})
-    if os.environ['QM_MODE'] not in {'demo','serial','real'}:
-        print('QM_MODE deve ser demo, serial ou real.', file=sys.stderr); return 2
+    if os.environ['QM_MODE'] not in {'demo','serial','real','virtual'}:
+        print('QM_MODE deve ser demo, virtual, serial ou real.', file=sys.stderr); return 2
     try:
         port = int(os.environ['QM_WEB_PORT'])
         if not 1 <= port <= 65535: raise ValueError

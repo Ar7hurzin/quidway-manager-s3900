@@ -15,3 +15,5 @@ archives
 *.zip
 *.pdf
 *.docx
+
+instance/

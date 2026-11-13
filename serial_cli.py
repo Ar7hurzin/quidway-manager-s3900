@@ -6,7 +6,7 @@ import secrets
 import threading
 import time
 
-from serial_readonly import SerialSettings
+from serial_readonly import SerialSettings, open_connection
 from switch_text import decode_switch_text
 
 
@@ -83,15 +83,7 @@ class SerialCLISession:
             if self._connection:
                 raise SerialCLIError("Já existe uma sessão CLI aberta. Encerre-a antes de abrir outra.")
             try:
-                import serial
-            except ImportError as exc:
-                raise SerialCLIError("PySerial não está instalado. Execute start.ps1 para preparar as bibliotecas.") from exc
-            try:
-                self._connection = serial.Serial(
-                    port=settings.port, baudrate=settings.baud_rate,
-                    bytesize=serial.EIGHTBITS, parity=serial.PARITY_NONE,
-                    stopbits=serial.STOPBITS_ONE, timeout=0.1, write_timeout=2,
-                )
+                self._connection = open_connection(settings)
                 self._settings = settings
                 self._connection.reset_input_buffer()
                 # Blank line only wakes the console prompt; no configuration command is sent.

@@ -5,7 +5,7 @@ import re
 import time
 from datetime import datetime, timezone
 
-from serial_readonly import SerialReadOnlyError, SerialSettings
+from serial_readonly import SerialReadOnlyError, SerialSettings, open_connection
 from switch_config import ConfigurationError, ConfigurationPlan
 from switch_text import decode_switch_text, command_rejected
 
@@ -117,19 +117,7 @@ def _verify_vlan_preconditions(connection, settings: SerialSettings, plan: Confi
 
 def _open(settings: SerialSettings):
     try:
-        import serial
-    except ImportError as exc:
-        raise ConfigurationError("PySerial não está instalado. Execute start.ps1 para preparar as bibliotecas.") from exc
-    try:
-        connection = serial.Serial(
-            port=settings.port,
-            baudrate=settings.baud_rate,
-            bytesize=serial.EIGHTBITS,
-            parity=serial.PARITY_NONE,
-            stopbits=serial.STOPBITS_ONE,
-            timeout=0.1,
-            write_timeout=2,
-        )
+        connection = open_connection(settings)
     except Exception as exc:
         raise ConfigurationError(f"Não foi possível abrir {settings.port}. Feche Tera Term/MobaXterm e confirme o cabo.") from exc
     return connection

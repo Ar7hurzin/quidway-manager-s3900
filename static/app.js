@@ -26,18 +26,19 @@ let cliSensitivePrompt = false;
 
 function setMode(status) {
   appStatus = status;
+  const isVirtual = status.mode === "virtual";
   const isSerial = status.mode === "serial";
-  const isLive = status.mode === "real" || isSerial;
+  const isLive = status.mode === "real" || isSerial || isVirtual;
   const pill = $("mode-pill");
   const banner = $("mode-banner");
-  pill.textContent = status.mode === "real" ? "MODO REAL · SSH" : isSerial ? "MODO REAL · CONSOLE" : "DEMONSTRAÇÃO";
+  pill.textContent = isVirtual ? "SIMULAÇÃO · S3900 VIRTUAL" : status.mode === "real" ? "MODO REAL · SSH" : isSerial ? "MODO REAL · CONSOLE" : "DEMONSTRAÇÃO";
   pill.classList.toggle("real", isLive);
   banner.classList.toggle("real", isLive);
   banner.innerHTML = `<span class="banner-icon">${isLive ? "✓" : "!"}</span><span>${escapeHtml(status.message)}</span>`;
   $("ssh-message").textContent = isLive
     ? (status.ready ? (isSerial ? "Console serial configurado. Ao atualizar, o Manager envia consultas fixas somente de leitura." : "Conector SSH configurado. A interface envia somente os comandos fixos de consulta.") : status.message)
     : "Modo de demonstração: nenhuma sessão é aberta e nenhum dado vem do switch.";
-  $("transport-badge").textContent = isSerial ? "CONSOLE" : "SSH";
+  $("transport-badge").textContent = isVirtual ? "VIRTUAL" : isSerial ? "CONSOLE" : "SSH";
   $("refresh").disabled = isLive && !status.ready;
   $("refresh").title = isLive && !status.ready ? status.message : "Executar leitura segura";
   if (status.mode === "demo") {
@@ -46,6 +47,22 @@ function setMode(status) {
     $("ports-count").textContent = "18 / 24";
     $("vlan-count").textContent = "4";
     renderDemo();
+  } else if (isVirtual) {
+    $("ssh-message").textContent = "Console virtual isolado; não acessa hardware.";
+    $("ports-note").textContent = "28 interfaces simuladas. UP indica link virtual e porta habilitada.";
+    $("system-page").querySelector(".subtle-tag").textContent = "Simulação";
+    $("system-page").querySelector(".system-note").textContent = "Perfil simulado; não executa firmware Huawei original.";
+    $("system-page").querySelectorAll(".system-detail-card")[0].innerHTML = '<div class="card-overline">PERFIL VIRTUAL</div><h2>Quidway 3900-SI</h2><p>VRP 3.10(CN) RELEASE 0002 · respostas simuladas.</p>';
+    $("system-page").querySelectorAll(".system-detail-card")[1].innerHTML = '<div class="card-overline">HARDWARE</div><h2>Modelo lógico</h2><p>Sem emulação de CPU, memória ou ASIC.</p>';
+    $("system-page").querySelectorAll(".system-detail-card")[2].innerHTML = '<div class="card-overline">PORTAS VIRTUAIS</div><h2>28 interfaces</h2><p>24 Fast Ethernet e 4 Gigabit Ethernet simuladas.</p>';
+    $("system-page").querySelectorAll(".system-detail-card")[5].innerHTML = '<div class="card-overline">VALIDAÇÃO</div><h2>Laboratório virtual</h2><p>Teste de comandos, não confirmação de compatibilidade física.</p>';
+    $("system-page").querySelectorAll(".system-detail-card")[3].innerHTML = '<div class="card-overline">CONSOLE VIRTUAL</div><h2>S3900 Virtual</h2><p>Nenhuma porta COM ou SSH física utilizada.</p><p id="system-read-state">Aguardando leitura</p>';
+    $("system-page").querySelectorAll(".system-detail-card")[4].innerHTML = '<div class="card-overline">ISOLAMENTO</div><h2>Sem conexão física</h2><p>O transporte virtual não utiliza SSH nem a rede do laboratório.</p>';
+    $("switch-connections-note").textContent = "Links virtuais não representam dispositivos físicos.";
+    $("cli-connection-note").textContent = "Console virtual: comandos alteram somente o simulador.";
+    document.querySelector(".cli-warning").textContent = "Terminal virtual: comandos alteram apenas a simulação. Envie um comando por vez.";
+    loadVirtualState();
+    window.setInterval(loadVirtualState, 3000);
   } else if (isLive) {
     $("device-name").textContent = "Switch não consultado";
     $("device-model").textContent = "O modelo e o firmware só aparecem após uma leitura real";
@@ -77,6 +94,34 @@ function renderDemo() {
   ];
   $("vlan-body").innerHTML = rows.map(row => `<tr>${row.map(v => `<td>${escapeHtml(v)}</td>`).join("")}</tr>`).join("");
   $("last-read").textContent = "Demonstração";
+}
+
+function renderVirtual(data) {
+  $("device-name").textContent = data.name;
+  $("device-model").textContent = data.model + " · " + data.version;
+  $("ports-count").textContent = data.ports.filter(p => p.state === "up").length + " / " + data.ports.length;
+  $("vlan-count").textContent = data.vlans.length;
+  $("last-read").textContent = new Date().toLocaleTimeString("pt-BR");
+  $("connection-state").classList.add("online");
+  $("connection-state").querySelector("span").textContent = "Virtual ativo";
+  $("port-grid").innerHTML = data.ports.map(p => '<div class="port ' + (p.state === "down" ? "down" : "") + '" title="' + escapeHtml(p.interface + " · " + p.mode + " · PVID " + p.pvid + " · " + (p.admin ? "Habilitada" : "Desabilitada") + " · " + p.description) + '"><span class="port-num">' + String(p.number).padStart(2,"0") + '</span><span class="port-state">' + (p.admin ? p.state.toUpperCase() : "OFF") + '</span></div>').join("");
+  $("vlan-body").innerHTML = data.vlans.map(v => "<tr>" + [v.id,v.name,v.members,v.note].map(x=>"<td>"+escapeHtml(x)+"</td>").join("") + "</tr>").join("");
+  $("virtual-details").hidden = false;
+  $("virtual-save-state").textContent = data.dirty ? "Alterações ainda não salvas no startup virtual" : "Configuração virtual salva";
+  $("virtual-ips").textContent = Object.entries(data.ips).map(([v,ip]) => "VLAN " + v + ": " + ip.ip + " / " + ip.mask).join("\n") || "Nenhum IP configurado";
+  $("virtual-routes").textContent = data.routes.map(r => r.join(" ")).join("\n") || "Nenhuma rota estática";
+}
+
+async function loadVirtualState() {
+  if (appStatus.mode !== "virtual") return;
+  try {
+    const response = await fetch("/api/virtual/state", {cache:"no-store"});
+    if (!response.ok) throw new Error("Estado virtual indisponível");
+    renderVirtual(await response.json());
+  } catch {
+    $("connection-state").classList.remove("online");
+    $("connection-state").querySelector("span").textContent = "Virtual indisponível";
+  }
 }
 
 function escapeHtml(value) {
@@ -121,7 +166,7 @@ async function loadConnections() {
         }).join("")
       : '<div class="empty-inline">Nenhuma sessão foi registrada nos últimos 5 minutos.</div>';
     $("switch-device-count").textContent = "N/D";
-    $("switch-connections-note").textContent = data.switch?.message || "A coleta de dispositivos ainda não está disponível.";
+    $("switch-connections-note").textContent = appStatus.mode === "virtual" ? "Links virtuais não representam dispositivos físicos." : data.switch?.message || "A coleta de dispositivos ainda não está disponível.";
   } catch (error) {
     $("manager-session-list").innerHTML = `<div class="empty-inline">${escapeHtml(error.message)}</div>`;
     $("active-session-count").textContent = "—";
@@ -160,7 +205,10 @@ $("refresh").addEventListener("click", async () => {
     $("last-read").textContent = result.ok ? new Date(result.collected_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "Falha";
     const systemReadState = $("system-read-state");
     if (systemReadState) systemReadState.textContent = result.ok ? `Consultado às ${new Date(result.collected_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}` : "Falha na consulta";
-    if (result.mode === "real" || result.mode === "serial") {
+    if (result.mode === "virtual") {
+      if (result.snapshot) renderVirtual(result.snapshot);
+      if (result.outputs?.length) showOutputs(result.outputs);
+    } else if (result.mode === "real" || result.mode === "serial") {
       $("connection-state").classList.toggle("online", result.ok);
       $("connection-state").querySelector("span").textContent = result.ok ? (result.mode === "serial" ? "Console consultado" : "SSH consultado") : "Sem conexão";
       showOutputs(result.outputs);
@@ -374,6 +422,7 @@ $("apply-config-button").addEventListener("click", async () => {
     const output = document.createElement("pre");
     output.textContent = result.outputs.map(item => `${item.command}\n${item.output}`).join("\n\n");
     resultBox.append(output);
+    if (result.snapshot) renderVirtual(result.snapshot);
     await loadConfigurationStatus();
   } catch (error) {
     resultBox.classList.add("error");
@@ -388,9 +437,9 @@ let cliAvailable = false;
 function setCliConnected(connected, note = "") {
   cliConnected = connected;
   if (connected) cliOccupiedElsewhere = false;
-  $("cli-state").textContent = connected ? "Conectado · serial" : "Desconectado";
+  $("cli-state").textContent = connected ? (appStatus.mode === "virtual" ? "Conectado · virtual" : "Conectado · serial") : "Desconectado";
   $("cli-state").classList.toggle("cli-online", connected);
-  $("cli-open").disabled = connected || cliOccupiedElsewhere || !cliAvailable || appStatus.mode !== "serial";
+  $("cli-open").disabled = connected || cliOccupiedElsewhere || !cliAvailable || !["serial","virtual"].includes(appStatus.mode);
   $("cli-close").disabled = !connected;
   $("cli-command").disabled = !connected;
   $("cli-enter").disabled = !connected;
@@ -425,7 +474,7 @@ async function loadCliStatus() {
     const response = await fetch("/api/cli/status", { cache: "no-store" });
     const status = await response.json();
     cliAvailable = Boolean(status.available);
-    if (status.mode !== "serial" || !status.available) {
+    if (!["serial","virtual"].includes(status.mode) || !status.available) {
       sessionStorage.removeItem("qm_cli_token");
       cliToken = "";
       setCliConnected(false, status.mode === "serial" ? status.message : "Configure QM_MODE=serial e QM_ENABLE_CLI=true somente se precisar do terminal direto.");
@@ -438,7 +487,7 @@ async function loadCliStatus() {
       cliOccupiedElsewhere = false;
       sessionStorage.removeItem("qm_cli_token");
       cliToken = "";
-      setCliConnected(false, "Console serial configurado. Feche MobaXterm/Tera Term e conecte quando estiver pronto.");
+      setCliConnected(false, status.mode === "virtual" ? "Console virtual disponível. Nenhum cabo necessário." : "Console serial configurado. Feche MobaXterm/Tera Term e conecte quando estiver pronto.");
     }
   } catch {
     setCliConnected(false, "Não foi possível consultar o serviço local.");
@@ -501,6 +550,7 @@ $("cli-command-form").addEventListener("submit", async event => {
     const result = await response.json();
     if (!response.ok || !result.ok) throw new Error(result.error || "Não foi possível enviar o comando.");
     appendCliOutput(result.output, command || "↵ Enter");
+    if (appStatus.mode === "virtual") loadVirtualState();
     if (result.timed_out) $("cli-result").textContent = "O tempo de leitura terminou antes do prompt. Mostrei a saída parcial e não reenviei o comando; verifique a tela do switch antes de continuar.";
     $("cli-command").value = "";
   } catch (error) {

@@ -25,6 +25,7 @@ from serial_config import execute_plan, export_current_configuration
 from serial_cli import SerialCLIError, cli_session
 from ssh_readonly import SwitchSettings, SSHReadOnlyError, collect_diagnostics
 from switch_config import ConfigurationError, build_plan, consume_preview, issue_preview
+from virtual_switch import snapshot as virtual_snapshot
 
 atexit.register(cli_session.shutdown)
 
@@ -34,6 +35,7 @@ app.config.update(
     JSON_SORT_KEYS=False,
     MAX_CONTENT_LENGTH=32 * 1024,
     SECRET_KEY=os.getenv("QM_SECRET_KEY") or secrets.token_urlsafe(48),
+    SESSION_COOKIE_NAME="qm_virtual_session" if os.getenv("QM_MODE") == "virtual" else "session",
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=os.getenv("QM_HTTPS_ONLY", "false").lower() == "true",
@@ -64,7 +66,7 @@ def _login_rate_allowed():
 def _serial_exclusive(fn):
     @wraps(fn)
     def run(*args, **kwargs):
-        if mode() != "serial": return fn(*args, **kwargs)
+        if mode() not in {"serial", "virtual"}: return fn(*args, **kwargs)
         if not _serial_request_lock.acquire(blocking=False):
             return jsonify({"ok": False, "error": "Outra operação serial está em andamento. Aguarde e tente novamente."}), 409
         try: return fn(*args, **kwargs)
@@ -208,10 +210,13 @@ def switch_settings() -> SwitchSettings:
 
 
 def serial_settings() -> SerialSettings:
+    if mode() == "virtual":
+        return SerialSettings("S3900-Virtual", 9600, 3, virtual=True)
     return SerialSettings.from_environment()
 
 
 def config_writes_enabled() -> bool:
+    if mode() == "virtual": return True
     return os.getenv("QM_ENABLE_CONFIG_WRITES", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -293,10 +298,11 @@ def _cli_request_allowed() -> bool:
 
 @app.get("/api/cli/status")
 def cli_status():
-    return jsonify({"mode": mode(), "available": mode() == "serial" and cli_enabled(), "connected": cli_session.connected, "message": "CLI habilitada." if cli_enabled() else "CLI bloqueada. Defina QM_ENABLE_CLI=true somente em ambiente autorizado."})
+    return jsonify({"mode": mode(), "available": mode() in {"serial", "virtual"} and cli_enabled(), "connected": cli_session.connected, "message": "CLI virtual habilitada; sem hardware." if mode() == "virtual" else "CLI habilitada." if cli_enabled() else "CLI bloqueada. Defina QM_ENABLE_CLI=true somente em ambiente autorizado."})
 
 
 def cli_enabled():
+    if mode() == "virtual": return True
     return os.getenv("QM_ENABLE_CLI", "false").lower() == "true"
 
 
@@ -307,7 +313,7 @@ def cli_open():
         return jsonify({"ok": False, "error": "CLI bloqueada. Defina QM_ENABLE_CLI=true somente após validar o ambiente."}), 403
     if not _cli_request_allowed():
         return jsonify({"ok": False, "error": "Requisição bloqueada: use a interface local do Quidway Manager."}), 403
-    if mode() != "serial":
+    if mode() not in {"serial", "virtual"}:
         return jsonify({"ok": False, "error": "O terminal CLI integrado exige QM_MODE=serial e o cabo console conectado a este computador."}), 409
     try:
         session = cli_session.open(serial_settings())
@@ -341,7 +347,7 @@ def cli_close():
         payload = request.get_json(silent=True) or {}
         if not isinstance(payload, dict): return jsonify({"ok": False, "error": "JSON inválido."}), 400
         cli_session.close(payload.get("token"))
-        return jsonify({"ok": True, "message": "Sessão serial encerrada; porta COM liberada."})
+        return jsonify({"ok": True, "message": "Sessão virtual encerrada." if mode() == "virtual" else "Sessão serial encerrada; porta COM liberada."})
     except SerialCLIError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
@@ -349,6 +355,8 @@ def cli_close():
 @app.get("/api/status")
 def status():
     current_mode = mode()
+    if current_mode == "virtual":
+        return jsonify({"mode": "virtual", "label": "S3900 Virtual", "ready": True, "message": "SIMULAÇÃO: alterações persistem apenas no switch virtual. Nenhum equipamento físico é acessado."})
     if current_mode == "serial":
         try:
             cfg = serial_settings()
@@ -374,9 +382,19 @@ def status():
     })
 
 
+@app.get("/api/virtual/state")
+def virtual_state():
+    if mode() != "virtual":
+        return jsonify({"error": "Disponível somente no modo virtual."}), 409
+    try:
+        return jsonify(virtual_snapshot())
+    except (OSError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 503
+
+
 @app.get("/api/demo")
 def demo():
-    if mode() in {"real", "serial"}:
+    if mode() in {"real", "serial", "virtual"}:
         return jsonify({"error": "Os dados de demonstração estão desativados no modo real."}), 409
     return jsonify({**DEMO_DATA, "mode": "demo", "collected_at": datetime.now(timezone.utc).isoformat()})
 
@@ -385,6 +403,12 @@ def demo():
 @_serial_exclusive
 def refresh():
     current_mode = mode()
+    if current_mode == "virtual":
+        try:
+            outputs = [] if cli_session.connected else collect_serial_diagnostics(serial_settings())
+            return jsonify({"mode": "virtual", "ok": True, "message": "Estado do S3900 Virtual atualizado. Nenhum switch físico consultado.", "collected_at": datetime.now(timezone.utc).isoformat(), "outputs": outputs, "snapshot": virtual_snapshot()})
+        except (SerialReadOnlyError, OSError, ValueError) as exc:
+            return jsonify({"mode": "virtual", "ok": False, "message": str(exc), "outputs": []}), 503
     if current_mode not in {"real", "serial"}:
         return jsonify({
             "mode": "demo", "ok": True,
@@ -464,12 +488,13 @@ def connections():
 
 @app.get("/api/config/status")
 def configuration_status():
-    serial_mode = mode() == "serial"
+    serial_mode = mode() in {"serial", "virtual"}
     enabled = serial_mode and config_writes_enabled()
     return jsonify({
         "available": serial_mode,
         "writes_enabled": enabled,
         "message": (
+            "Configuração virtual habilitada: nenhuma alteração física." if mode() == "virtual" else
             "A configuração por console está habilitada com prévia por operação."
             if enabled else
             "Prévia e validação disponíveis. O envio de mudanças está bloqueado por QM_ENABLE_CONFIG_WRITES=false."
@@ -482,7 +507,7 @@ def configuration_status():
 
 @app.post("/api/config/preview")
 def configuration_preview():
-    if mode() != "serial":
+    if mode() not in {"serial", "virtual"}:
         return jsonify({"error": "A configuração requer QM_MODE=serial e o cabo console local."}), 409
     try:
         payload = request.get_json(silent=True)
@@ -491,7 +516,7 @@ def configuration_preview():
         return jsonify({
             "ok": True, "token": token, "action": plan.action,
             "summary": plan.summary, "commands": list(plan.commands),
-            "warnings": list(plan.warnings),
+            "warnings": (["SIMULAÇÃO: somente o estado virtual será alterado."] if mode() == "virtual" else list(plan.warnings)),
             "expires_in_seconds": 300,
         })
     except ConfigurationError as exc:
@@ -501,7 +526,7 @@ def configuration_preview():
 @app.post("/api/config/apply")
 @_serial_exclusive
 def configuration_apply():
-    if mode() != "serial":
+    if mode() not in {"serial", "virtual"}:
         return jsonify({"ok": False, "error": "A configuração requer o modo serial local."}), 409
     if not config_writes_enabled():
         return jsonify({"ok": False, "error": "Envio de mudanças está bloqueado. Habilite QM_ENABLE_CONFIG_WRITES somente após revisar a prévia e os comandos para o firmware instalado."}), 403
@@ -514,17 +539,18 @@ def configuration_apply():
         outputs = execute_plan(serial_settings(), plan)
         return jsonify({
             "ok": True, "summary": plan.summary,
-            "message": "Operação enviada. Revise os retornos do switch; as mudanças em execução ainda podem precisar ser salvas.",
+            "message": "Operação aplicada ao S3900 Virtual." if mode() == "virtual" else "Operação enviada. Revise os retornos do switch; as mudanças em execução ainda podem precisar ser salvas.",
             "outputs": outputs,
+            **({"snapshot": virtual_snapshot()} if mode() == "virtual" else {}),
         })
-    except (ConfigurationError, SerialReadOnlyError) as exc:
+    except (ConfigurationError, SerialReadOnlyError, OSError, ValueError) as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
 @app.post("/api/config/backup")
 @_serial_exclusive
 def configuration_backup():
-    if mode() != "serial":
+    if mode() not in {"serial", "virtual"}:
         return jsonify({"ok": False, "error": "O backup requer o modo serial local."}), 409
     if cli_session.connected:
         return jsonify({"ok": False, "error": "Encerre a sessão CLI antes de exportar o backup serial."}), 409
@@ -535,7 +561,7 @@ def configuration_backup():
             as_attachment=True, download_name=filename,
             max_age=0,
         )
-    except (ConfigurationError, SerialReadOnlyError) as exc:
+    except (ConfigurationError, SerialReadOnlyError, OSError, ValueError) as exc:
         return jsonify({"ok": False, "error": str(exc)}), 503
 
 

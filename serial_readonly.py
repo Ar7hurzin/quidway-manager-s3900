@@ -18,6 +18,7 @@ class SerialSettings:
     port: str
     baud_rate: int
     timeout_seconds: int
+    virtual: bool = False
 
     @classmethod
     def from_environment(cls) -> "SerialSettings":
@@ -72,22 +73,19 @@ def _clean_output(raw: bytes, command: str) -> str:
     return "\n".join(lines).strip()
 
 
+def open_connection(settings: SerialSettings):
+    if settings.virtual:
+        from virtual_switch import VirtualConsole
+        return VirtualConsole()
+    import serial
+    return serial.Serial(port=settings.port, baudrate=settings.baud_rate,
+                         bytesize=serial.EIGHTBITS, parity=serial.PARITY_NONE,
+                         stopbits=serial.STOPBITS_ONE, timeout=0.1, write_timeout=2)
+
+
 def collect_serial_diagnostics(settings: SerialSettings) -> list[dict[str, str]]:
     try:
-        import serial
-    except ImportError as exc:
-        raise SerialReadOnlyError("PySerial não está instalado. Instale requirements.txt no ambiente Python.") from exc
-
-    try:
-        with serial.Serial(
-            port=settings.port,
-            baudrate=settings.baud_rate,
-            bytesize=serial.EIGHTBITS,
-            parity=serial.PARITY_NONE,
-            stopbits=serial.STOPBITS_ONE,
-            timeout=0.1,
-            write_timeout=2,
-        ) as connection:
+        with open_connection(settings) as connection:
             # Wake a quiet console with an empty line, then require a recognizable VRP prompt.
             connection.reset_input_buffer()
             connection.write(b"\r\n")
