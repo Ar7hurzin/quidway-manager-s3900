@@ -27,9 +27,9 @@ def main() -> int:
         print("Nome de usuário inválido.")
         return 2
 
-    password = getpass.getpass("Senha (mínimo 12 caracteres): ")
-    if len(password) < 12:
-        print("A senha precisa ter pelo menos 12 caracteres.")
+    password = getpass.getpass("Senha (12 a 1024 caracteres): ")
+    if not 12 <= len(password) <= 1024:
+        print("A senha precisa ter de 12 a 1024 caracteres.")
         return 2
     repeated = getpass.getpass("Digite a senha novamente: ")
     if not secrets.compare_digest(password.encode("utf-8"), repeated.encode("utf-8")):

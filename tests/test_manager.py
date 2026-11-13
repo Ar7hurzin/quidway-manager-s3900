@@ -32,8 +32,10 @@ class ManagerTest(unittest.TestCase):
         self.login()
         for page in ('/','/sistema','/monitoramento','/configuracao','/cli','/api/status','/api/demo','/api/config/status','/api/cli/status','/api/connections'):
             with self.subTest(page=page): self.assertEqual(self.client.get(page).status_code,200)
-        self.assertEqual(self.client.get('/static/styles.css').status_code,200)
-        self.assertEqual(self.client.get('/static/login.js').status_code,200)
+        for path in ('/static/styles.css','/static/login.js'):
+            response = self.client.get(path)
+            try: self.assertEqual(response.status_code,200)
+            finally: response.close()
     def test_login_csrf_and_logout(self):
         self.assertEqual(self.client.post('/login',data={'username':'test-admin','password':PASSWORD}).status_code,400)
         token=self.login()
@@ -62,6 +64,10 @@ class ManagerTest(unittest.TestCase):
         self.login()
         with self.client.session_transaction() as sess: sess['qm_login_time']=0
         self.assertEqual(self.client.get('/api/status').status_code,401)
+    def test_unicode_csrf_rejected(self):
+        self.client.get("/login")
+        self.assertEqual(self.client.post("/login", data={"username":"test-admin","password":PASSWORD,"csrf_token":"ç"}).status_code,400)
+
     def test_secure_headers(self):
         response=self.client.get('/login')
         self.assertEqual(response.headers['Cache-Control'],'no-store')

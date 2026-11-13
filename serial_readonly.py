@@ -6,7 +6,7 @@ import re
 import time
 from dataclasses import dataclass
 
-from switch_text import decode_switch_text
+from switch_text import decode_switch_text, command_rejected
 
 
 class SerialReadOnlyError(RuntimeError):
@@ -96,7 +96,10 @@ def collect_serial_diagnostics(settings: SerialSettings) -> list[dict[str, str]]
             for command in READ_ONLY_COMMANDS:
                 connection.write(command.encode("ascii") + b"\r\n")
                 raw = _read_until_prompt(connection, settings.timeout_seconds)
-                results.append({"command": command, "output": _clean_output(raw, command)})
+                output = _clean_output(raw, command)
+                if command_rejected(output):
+                    raise SerialReadOnlyError(f"O switch rejeitou a consulta {command}. Confira o firmware e o acesso.")
+                results.append({"command": command, "output": output})
             return results
     except SerialReadOnlyError:
         raise

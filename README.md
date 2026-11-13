@@ -22,6 +22,8 @@ As gravações são baseadas no manual de comandos da série S3900 Release 1510.
 
 ## Iniciar
 
+Para os comandos de uso diário e instalação em cada sistema, consulte [Comandos rápidos](docs/comandos-rapidos.md).
+
 A interface **Quidway Light** usa tema claro e o mesmo endereço local. Há um inicializador Python compartilhado para Windows/Linux; consulte [instalação nativa e Docker](docs/instalacao-docker.md) para comandos de instalação, autenticação, Docker Compose e limitações.
 
 

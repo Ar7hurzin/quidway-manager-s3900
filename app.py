@@ -107,7 +107,12 @@ def _check_password(password: str) -> bool:
 
 
 def _auth_configured() -> bool:
-    return bool(AUTH_USERNAME and _valid_password_hash(AUTH_PASSWORD_HASH) and os.getenv("QM_SECRET_KEY"))
+    return bool(re.fullmatch(r"[A-Za-z0-9_.-]{3,64}", AUTH_USERNAME) and _valid_password_hash(AUTH_PASSWORD_HASH) and os.getenv("QM_SECRET_KEY"))
+
+
+def _safe_token_equal(supplied: object, expected: object) -> bool:
+    return (isinstance(supplied, str) and isinstance(expected, str) and bool(expected)
+            and supplied.isascii() and expected.isascii() and hmac.compare_digest(supplied, expected))
 
 
 def _touch_active_session() -> None:
@@ -134,7 +139,7 @@ def require_login_and_csrf():
         if request.method == "POST":
             supplied = request.form.get("csrf_token", "")
             expected = session.get("csrf_token", "")
-            if not expected or not hmac.compare_digest(supplied, expected):
+            if not _safe_token_equal(supplied, expected):
                 return "Token de formulário inválido. Atualize a página e tente novamente.", 400
         return None
 
@@ -154,7 +159,7 @@ def require_login_and_csrf():
     if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
         supplied = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token", "")
         expected = session.get("csrf_token", "")
-        if not expected or not hmac.compare_digest(supplied, expected):
+        if not _safe_token_equal(supplied, expected):
             if request.path.startswith("/api/"):
                 return jsonify({"ok": False, "error": "Token de segurança inválido. Atualize a página e tente novamente."}), 400
             return "Token de segurança inválido. Atualize a página e tente novamente.", 400
@@ -279,7 +284,10 @@ def _cli_request_allowed() -> bool:
     origin = request.headers.get("Origin")
     if not origin:
         return True
-    parsed = urlsplit(origin)
+    try:
+        parsed = urlsplit(origin)
+    except ValueError:
+        return False
     return parsed.scheme in {"http", "https"} and parsed.netloc == request.host
 
 
@@ -479,7 +487,7 @@ def configuration_preview():
     try:
         payload = request.get_json(silent=True)
         plan = build_plan(payload)
-        token = issue_preview(plan)
+        token = issue_preview(plan, owner=session.get("qm_session_id"))
         return jsonify({
             "ok": True, "token": token, "action": plan.action,
             "summary": plan.summary, "commands": list(plan.commands),
@@ -502,7 +510,7 @@ def configuration_apply():
     try:
         payload = request.get_json(silent=True) or {}
         if not isinstance(payload, dict): return jsonify({"ok": False, "error": "JSON inválido."}), 400
-        plan = consume_preview(payload.get("token"))
+        plan = consume_preview(payload.get("token"), owner=session.get("qm_session_id"))
         outputs = execute_plan(serial_settings(), plan)
         return jsonify({
             "ok": True, "summary": plan.summary,

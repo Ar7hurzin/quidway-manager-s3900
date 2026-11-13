@@ -8,7 +8,13 @@ window.fetch = (input, init = {}) => {
     headers.set("X-CSRF-Token", document.querySelector('meta[name="csrf-token"]')?.content || "");
     init = { ...init, headers };
   }
-  return baseFetch(input, init);
+  return baseFetch(input, init).then(response => {
+    if (url.origin === window.location.origin && url.pathname.startsWith("/api/") && response.status === 401) {
+      window.location.assign("/login");
+      throw new Error("Sessão encerrada. Entre novamente.");
+    }
+    return response;
+  });
 };
 let appStatus = { mode: "demo", ready: false };
 let configStatus = { available: false, writes_enabled: false };
@@ -80,9 +86,12 @@ function escapeHtml(value) {
 async function loadStatus() {
   try {
     const response = await fetch("/api/status", { cache: "no-store" });
+    if (!response.ok) throw new Error("Serviço indisponível");
     setMode(await response.json());
   } catch {
-    setMode({ mode: "demo", ready: false, message: "Não foi possível consultar o serviço local." });
+    $("mode-pill").textContent = "INDISPONÍVEL";
+    $("mode-banner").textContent = "Não foi possível consultar o serviço local. Atualize a página.";
+    $("refresh").disabled = true;
   }
 }
 
@@ -147,7 +156,7 @@ $("refresh").addEventListener("click", async () => {
   try {
     const response = await fetch("/api/refresh", { method: "POST", headers: { "Accept": "application/json" } });
     const result = await response.json();
-    $("ssh-message").textContent = result.message;
+    $("ssh-message").textContent = result.message || result.error || "Não foi possível consultar o switch.";
     $("last-read").textContent = result.ok ? new Date(result.collected_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "Falha";
     const systemReadState = $("system-read-state");
     if (systemReadState) systemReadState.textContent = result.ok ? `Consultado às ${new Date(result.collected_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}` : "Falha na consulta";
@@ -156,7 +165,7 @@ $("refresh").addEventListener("click", async () => {
       $("connection-state").querySelector("span").textContent = result.ok ? (result.mode === "serial" ? "Console consultado" : "SSH consultado") : "Sem conexão";
       showOutputs(result.outputs);
     } else {
-      $("mode-banner").innerHTML = `<span class="banner-icon">!</span><span>${escapeHtml(result.message)}</span>`;
+      $("mode-banner").innerHTML = `<span class="banner-icon">!</span><span>${escapeHtml(result.message || result.error || "Não foi possível concluir a consulta.")}</span>`;
     }
   } catch {
     $("ssh-message").textContent = "Não foi possível falar com o serviço local.";
