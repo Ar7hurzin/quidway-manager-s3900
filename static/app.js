@@ -23,9 +23,12 @@ let cliToken = sessionStorage.getItem("qm_cli_token") || "";
 let cliConnected = false;
 let cliOccupiedElsewhere = false;
 let cliSensitivePrompt = false;
+let physicalRefreshBusy = false;
+let physicalTimer = null;
 
 function setMode(status) {
   appStatus = status;
+  document.documentElement.dataset.mode = status.mode;
   const isVirtual = status.mode === "virtual";
   const isSerial = status.mode === "serial";
   const isLive = status.mode === "real" || isSerial || isVirtual;
@@ -74,6 +77,10 @@ function setMode(status) {
     $("outputs").innerHTML = '<div class="empty-inline">Nenhuma consulta executada nesta sessão.</div>';
     $("connection-state").classList.remove("online");
     $("connection-state").querySelector("span").textContent = "Sem conexão";
+    if (isSerial) {
+      loadPhysicalCache().then(() => { if (["dashboard","monitoring","system"].includes(pageKind)) refreshPhysical(true); });
+      if (["dashboard","monitoring","system"].includes(pageKind) && !physicalTimer) physicalTimer = window.setInterval(() => { if (!document.hidden) refreshPhysical(true); }, 12000);
+    }
   }
   loadConfigurationStatus();
   if (pageKind === "cli") loadCliStatus();
@@ -94,6 +101,89 @@ function renderDemo() {
   ];
   $("vlan-body").innerHTML = rows.map(row => `<tr>${row.map(v => `<td>${escapeHtml(v)}</td>`).join("")}</tr>`).join("");
   $("last-read").textContent = "Demonstração";
+}
+
+function renderPhysical(data, stale = false) {
+  if (!data) return;
+  const text = (id, value) => { $(id).textContent = value ?? "—"; };
+  const ports = data.ports || [];
+  const known = ports.filter(p => p.state === "up" || p.state === "down");
+  text("device-name", data.name);
+  text("device-model", data.version);
+  text("ports-count", known.length === ports.length ? known.filter(p => p.state === "up").length + " / " + ports.length : known.filter(p => p.state === "up").length + " / " + (data.expected_ports || 28) + " *");
+  text("ports-count-note", known.length === ports.length ? "Todas as portas consultadas" : known.length + " de " + (data.expected_ports || 28) + " estados de link confirmados");
+  text("vlan-count", data.vlans === null ? "—" : data.vlans.length);
+  text("vlan-count-note", data.vlans === null ? "Lista não reconhecida" : "VLANs lidas do switch");
+  text("last-read", new Date(data.collected_at).toLocaleTimeString("pt-BR"));
+  text("last-read-note", stale ? "Última leitura · desatualizada" : "Coleta automática em lotes");
+  $("connection-state").classList.toggle("online", !stale);
+  $("connection-state").querySelector("span").textContent = stale ? "Dados anteriores" : "Console consultado";
+  text("physical-collection-note", (stale ? "Última leitura disponível. " : "Leitura real. ") + "Estados e detalhes têm horários próprios; dados não reconhecidos aparecem como —. " + (data.notes || []).join(" "));
+  $("ports-note").textContent = "Portas físicas: " + known.length + " de " + ports.length + " links identificados. Selecione uma porta para ver os detalhes e o horário da leitura.";
+  $("port-grid").innerHTML = ports.map(p => '<button type="button" class="port ' + (p.state === "down" ? "down" : p.state === "up" ? "" : "unknown") + '" data-real-port="' + p.number + '" title="' + escapeHtml(p.interface + " · " + (p.mode || "—") + " · PVID " + (p.pvid ?? "—")) + '"><span class="port-num">' + String(p.number).padStart(2,"0") + '</span><span class="port-state">' + (p.state || "—").toUpperCase() + '</span></button>').join("");
+  const rows = data.vlans;
+  $("vlan-body").innerHTML = rows === null ? '<tr><td colspan="4" class="table-empty">Lista não reconhecida; consulte Diagnóstico.</td></tr>' : rows.map(v => "<tr>" + [v.id,v.name ?? "—",v.members ?? "—",v.collected_at ? "Console · " + new Date(v.collected_at).toLocaleTimeString("pt-BR") : "Inventário"].map(x=>"<td>"+escapeHtml(x)+"</td>").join("") + "</tr>").join("");
+  const selected = Number($("physical-port-detail").dataset.port || 1);
+  function detail(number) {
+    const p = ports.find(p => p.number === number);
+    if (!p) return;
+    $("physical-port-detail").dataset.port = String(number);
+    $("physical-port-detail").textContent = p.interface + " · Link: " + (p.state || "—").toUpperCase() + " · PVID: " + (p.pvid ?? "—") + " · Modo: " + (p.mode || "—") + " · Descrição: " + (p.description || "—") + "\nTagged: " + (p.tagged || "—") + " · Untagged: " + (p.untagged || "—") + "\nEntrada: " + (p.rx_bps == null ? "—" : p.rx_bps + " bit/s") + " · Saída: " + (p.tx_bps == null ? "—" : p.tx_bps + " bit/s") + "\nDetalhes: " + (p.collected_at ? new Date(p.collected_at).toLocaleString("pt-BR") : "não coletados") + " · Link: " + (p.link_at ? new Date(p.link_at).toLocaleString("pt-BR") : "não coletado");
+  }
+  $("port-grid").querySelectorAll("[data-real-port]").forEach(button => button.addEventListener("click", () => detail(Number(button.dataset.realPort))));
+  detail(selected);
+  const cards = $("system-page").querySelectorAll(".system-detail-card");
+  cards[0].querySelector("h2").textContent = data.model;
+  cards[0].querySelectorAll("dd")[1].textContent = data.version;
+  [data.hardware, data.cpld, data.bootrom].forEach((v,i) => cards[1].querySelectorAll("dd")[i].textContent = v || "—");
+  cards[3].querySelector("h2").textContent = data.port + " · " + data.baud_rate + " baud";
+  text("system-read-state", stale ? "Leitura anterior" : "Consultado às " + new Date(data.collected_at).toLocaleTimeString("pt-BR"));
+  $("system-page").querySelector(".system-note").textContent = "Identificação e dados lidos pelo console. Consulte o mapa para informações de cada porta.";
+  $("system-page").querySelector(".subtle-tag").textContent = stale ? "Leitura anterior" : "Leitura real";
+}
+
+async function loadPhysicalCache() {
+  try {
+    const response = await fetch("/api/dashboard", {cache:"no-store"});
+    if (!response.ok) return null;
+    const result = await response.json();
+    if (result.snapshot) renderPhysical(result.snapshot, result.stale || result.cli_busy);
+    if (result.outputs?.length) showOutputs(result.outputs);
+    if (result.cli_busy) $("physical-collection-note").textContent = "Atualização pausada: terminal CLI aberto. Encerre a sessão para retomar.";
+    return result;
+  } catch { return null; }
+}
+
+async function refreshPhysical(automatic = false) {
+  if (appStatus.mode !== "serial" || physicalRefreshBusy) return;
+  physicalRefreshBusy = true;
+  const button = $("refresh");
+  button.disabled = true;
+  button.innerHTML = "<span>◌</span> Consultando...";
+  try {
+    const cache = await loadPhysicalCache();
+    if (cache?.cli_busy) return;
+    const response = await fetch("/api/refresh", {method:"POST", headers:{"Content-Type":"application/json","Accept":"application/json"}, body: JSON.stringify({automatic})});
+    const result = await response.json();
+    if (!response.ok || !result.ok) {
+      $("physical-collection-note").textContent = result.message || result.error || "Falha na coleta.";
+      if (cache?.snapshot) {
+        $("connection-state").classList.remove("online");
+        $("connection-state").querySelector("span").textContent = "Dados anteriores";
+        $("last-read-note").textContent = "Última leitura · desatualizada";
+      }
+      return;
+    }
+    renderPhysical(result.snapshot, result.stale);
+    showOutputs(result.outputs);
+    $("ssh-message").textContent = result.message;
+  } catch {
+    $("physical-collection-note").textContent = "Não foi possível atualizar. Confira o serviço local.";
+  } finally {
+    physicalRefreshBusy = false;
+    button.disabled = !appStatus.ready;
+    button.innerHTML = "<span>↻</span> Atualizar leitura";
+  }
 }
 
 function renderVirtual(data) {
@@ -195,6 +285,7 @@ function syncNavigation() {
 syncNavigation();
 
 $("refresh").addEventListener("click", async () => {
+  if (appStatus.mode === "serial") return refreshPhysical(false);
   const button = $("refresh");
   button.disabled = true;
   button.innerHTML = "<span>◌</span> Consultando...";
@@ -439,6 +530,7 @@ $("apply-config-button").addEventListener("click", async () => {
     output.textContent = result.outputs.map(item => `${item.command}\n${item.output}`).join("\n\n");
     resultBox.append(output);
     if (result.snapshot) renderVirtual(result.snapshot);
+    if (appStatus.mode === "serial") await refreshPhysical(false);
     await loadConfigurationStatus();
   } catch (error) {
     resultBox.classList.add("error");
