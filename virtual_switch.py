@@ -81,7 +81,7 @@ def snapshot():
 def _configuration(s):
     lines = ["#", f"sysname {s['name']}"]
     for v,name in sorted(s["vlans"].items(),key=lambda x:int(x[0])):
-        lines += ["#", f"vlan {v}", f" name {name}"]
+        lines += ["#", f"vlan {v}", f" description {name}"]
     for n,p in s["ports"].items():
         lines += ["#", f"interface {_interface(int(n))}", f" port link-type {p['mode']}"]
         if p["mode"] == "access": lines += [f" port access vlan {p['pvid']}"]
@@ -194,7 +194,7 @@ class VirtualConsole:
                 elif r not in s["routes"]: s["routes"].append(r)
                 return "",True
         if self.view=="vlan":
-            m=re.fullmatch(r"name ([A-Za-z0-9_.-]{1,31})",c)
+            m=re.fullmatch(r"description ([A-Za-z0-9_.-]{1,31})",c)
             if m: s["vlans"][self.target]=m[1]; return "",True
         if self.view=="ip":
             m=re.fullmatch(r"ip address (\S+) (\S+)",c)
