@@ -26,6 +26,7 @@ class VirtualTest(unittest.TestCase):
     def test_vlan_port_and_persistence(self):
         self.assertEqual(len(snapshot()["ports"]),28)
         self.apply("create_vlan",vlan_id=100,name="LAB")
+        self.assertEqual(snapshot()["vlans"][1]["name"], "LAB")
         self.apply("set_access_port",port=25,vlan_id=100)
         self.apply("set_port_description",port=25,description="Uplink test")
         self.apply("set_port_state",port=25,state="down")
@@ -37,7 +38,9 @@ class VirtualTest(unittest.TestCase):
         self.assertFalse(snapshot()["dirty"])
         self.assertTrue(snapshot()["last_saved"])
         self.assertIn(b"vlan 100",export_current_configuration(self.settings)[0])
+        self.assertIn(b"description LAB",export_current_configuration(self.settings)[0])
         self.apply("rename_vlan",vlan_id=100,name="NEW")
+        self.assertEqual(snapshot()["vlans"][1]["name"], "NEW")
         self.assertTrue(snapshot()["dirty"])
         self.apply("delete_vlan",vlan_id=100)
         self.assertEqual(snapshot()["ports"][24]["pvid"],1)
