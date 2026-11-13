@@ -95,15 +95,15 @@ def build_plan(payload: object) -> ConfigurationPlan:
         name = payload.get("name", "")
         commands = ["system-view", f"vlan {vlan}"]
         if name:
-            commands.append(f"name {_safe_text(name, 'nome da VLAN')}")
+            commands.append(f"description {_safe_text(name, 'descrição da VLAN')}")
         commands.extend(("quit", "return"))
         return ConfigurationPlan(action, f"Criar VLAN {vlan}" + (f" ({name})" if name else ""), tuple(commands), tuple(warnings))
 
     if action == "rename_vlan":
         vlan = _vlan_id(payload.get("vlan_id"))
-        name = _safe_text(payload.get("name"), "nome da VLAN")
-        commands = ("system-view", f"vlan {vlan}", f"name {name}", "quit", "return")
-        return ConfigurationPlan(action, f"Alterar nome da VLAN {vlan} para {name}", commands, tuple(warnings))
+        name = _safe_text(payload.get("name"), "descrição da VLAN")
+        commands = ("system-view", f"vlan {vlan}", f"description {name}", "quit", "return")
+        return ConfigurationPlan(action, f"Alterar descrição da VLAN {vlan} para {name}", commands, tuple(warnings))
 
     if action == "delete_vlan":
         vlan = _vlan_id(payload.get("vlan_id"))
