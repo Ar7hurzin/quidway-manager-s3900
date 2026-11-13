@@ -554,7 +554,7 @@ def configuration_apply():
         payload = request.get_json(silent=True) or {}
         if not isinstance(payload, dict): return jsonify({"ok": False, "error": "JSON inválido."}), 400
         plan = consume_preview(payload.get("token"), owner=session.get("qm_session_id"))
-        if mode() == "serial": physical_dashboard.invalidate()
+        if mode() == "serial": physical_dashboard.invalidate(plan)
         outputs = execute_plan(serial_settings(), plan)
         return jsonify({
             "ok": True, "summary": plan.summary,
