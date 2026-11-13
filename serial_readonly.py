@@ -21,14 +21,14 @@ class SerialSettings:
 
     @classmethod
     def from_environment(cls) -> "SerialSettings":
-        port = os.getenv("QM_SERIAL_PORT", "COM9").strip()
+        port = os.getenv("QM_SERIAL_PORT", "COM9" if os.name == "nt" else "/dev/ttyUSB0").strip()
         try:
             baud_rate = int(os.getenv("QM_SERIAL_BAUD", "9600"))
             timeout = int(os.getenv("QM_CONNECT_TIMEOUT", "10"))
         except ValueError as exc:
             raise SerialReadOnlyError("QM_SERIAL_BAUD e QM_CONNECT_TIMEOUT devem ser números inteiros.") from exc
         if not port:
-            raise SerialReadOnlyError("Defina QM_SERIAL_PORT com a porta COM do cabo console.")
+            raise SerialReadOnlyError("Defina QM_SERIAL_PORT com a porta do cabo console (COM no Windows ou /dev/ttyUSB0 no Linux).")
         if baud_rate not in {1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200}:
             raise SerialReadOnlyError("QM_SERIAL_BAUD deve ser uma velocidade serial comum entre 1200 e 115200.")
         if not 3 <= timeout <= 60:
@@ -76,7 +76,7 @@ def collect_serial_diagnostics(settings: SerialSettings) -> list[dict[str, str]]
     try:
         import serial
     except ImportError as exc:
-        raise SerialReadOnlyError("PySerial não está instalado. Execute start.ps1 para preparar as bibliotecas.") from exc
+        raise SerialReadOnlyError("PySerial não está instalado. Instale requirements.txt no ambiente Python.") from exc
 
     try:
         with serial.Serial(

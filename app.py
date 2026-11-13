@@ -11,6 +11,7 @@ import secrets
 import threading
 import time
 from io import BytesIO
+from functools import wraps
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,7 @@ app.config.update(
     SECRET_KEY=os.getenv("QM_SECRET_KEY") or secrets.token_urlsafe(48),
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.getenv("QM_HTTPS_ONLY", "false").lower() == "true",
     PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
 )
 AUTH_USERNAME = os.getenv("QM_AUTH_USERNAME", "").strip()
@@ -43,10 +45,35 @@ ACTIVE_SESSION_TTL_SECONDS = 5 * 60
 SESSION_MAX_AGE_SECONDS = 8 * 60 * 60
 _active_sessions: dict[str, tuple[str, float]] = {}
 _active_sessions_lock = threading.Lock()
+_serial_request_lock = threading.Lock()
+_login_attempts = {}
+_login_lock = threading.Lock()
+
+def _login_rate_allowed():
+    now = time.monotonic()
+    key = request.remote_addr or "local"
+    with _login_lock:
+        for k, (_, until) in list(_login_attempts.items()):
+            if until <= now: _login_attempts.pop(k, None)
+        count, until = _login_attempts.get(key, (0, now + 60))
+        if count >= 8 or (key not in _login_attempts and len(_login_attempts) >= 1024):
+            return False
+        _login_attempts[key] = (count + 1, until)
+        return True
+
+def _serial_exclusive(fn):
+    @wraps(fn)
+    def run(*args, **kwargs):
+        if mode() != "serial": return fn(*args, **kwargs)
+        if not _serial_request_lock.acquire(blocking=False):
+            return jsonify({"ok": False, "error": "Outra operação serial está em andamento. Aguarde e tente novamente."}), 409
+        try: return fn(*args, **kwargs)
+        finally: _serial_request_lock.release()
+    return run
 
 
-LOGIN_PAGE = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf-token" content="{{ csrf_token }}"><title>Entrar · Quidway Manager</title><link rel="stylesheet" href="/static/styles.css?v=20261105-3"></head><body class="login-body"><main class="login-card"><div class="brand-mark">Q</div><p class="card-overline">ACESSO PRIVADO</p><h1>Quidway Manager</h1><p class="login-note">Entre com a conta local configurada neste computador.</p>{% if error %}<p class="login-error" role="alert">{{ error }}</p>{% endif %}<form method="post" action="/login"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Usuário<input name="username" autocomplete="username" required autofocus></label><label>Senha<input name="password" type="password" autocomplete="current-password" required></label><button class="button button-primary" type="submit">Entrar</button></form><small>A sessão termina depois de 8 horas.</small></main></body></html>"""
-SETUP_REQUIRED_PAGE = """<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Configurar acesso · Quidway Manager</title><body style="font:16px Segoe UI,sans-serif;max-width:650px;margin:12vh auto;padding:24px;background:#09121d;color:#e9f1f7"><h1>Configure o login antes de iniciar</h1><p>O Quidway Manager está bloqueado porque ainda não há uma conta local configurada.</p><p>Na pasta do projeto, execute <code> .\\configure-login.ps1 </code>, escolha usuário e senha e depois reinicie com <code> .\\start.ps1 </code>.</p></body></html>"""
+LOGIN_PAGE = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf-token" content="{{ csrf_token }}"><title>Entrar · Quidway Manager</title><link rel="stylesheet" href="/static/styles.css?v=20261113-light-1"></head><body class="login-body"><main class="login-shell"><section class="login-hero"><div><div class="brand-mark">Q</div><h2>Gerencie sua infraestrutura de rede</h2><p>Quidway Manager · Huawei Quidway S3900<br>Monitoramento, diagnóstico e configuração em um único console.</p></div><small>CONSOLE DE GERENCIAMENTO PRIVADO</small></section><section class="login-card"><p class="card-overline">ACESSO PRIVADO</p><h1>Entrar</h1><p class="login-note">Use a conta local configurada neste computador.</p>{% if error %}<p class="login-error" role="alert">{{ error }}</p>{% endif %}<form method="post" action="/login"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Usuário<input name="username" autocomplete="username" required autofocus maxlength="64"></label><label>Senha<div class="password-field"><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024"><button id="show-password" type="button" class="button button-secondary" aria-pressed="false">Mostrar</button></div></label><button class="button button-primary" type="submit">Entrar</button></form><small>A sessão termina depois de 8 horas.</small></section></main><script src="/static/login.js?v=1" defer></script></body></html>"""
+SETUP_REQUIRED_PAGE = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Configurar acesso · Quidway Manager</title><link rel="stylesheet" href="/static/styles.css?v=20261113-light-1"></head><body class="login-body"><main class="card setup-card"><h1>Configure o login antes de iniciar</h1><p>O Quidway Manager está bloqueado até criar uma conta local. Execute o comando correspondente ao seu ambiente e reinicie o servidor.</p><p>Linux: <code>.venv/bin/python configure_login.py</code></p><p>Windows: <code>.\\configure-login.ps1</code></p><p>Docker: <code>docker compose run --rm app configure</code></p></main></body></html>"""
 
 
 def _render_manager():
@@ -214,10 +241,17 @@ def login():
         return redirect(url_for("index"))
     csrf_token = session.setdefault("csrf_token", secrets.token_urlsafe(32))
     if request.method == "POST":
+        if not _login_rate_allowed():
+            response = app.make_response((render_template_string(LOGIN_PAGE, csrf_token=csrf_token, error="Muitas tentativas. Aguarde um minuto e tente novamente."), 429))
+            response.headers["Retry-After"] = "60"
+            return response
         username = request.form.get("username", "")
         password = request.form.get("password", "")
         username_matches = username.isascii() and hmac.compare_digest(username, AUTH_USERNAME)
-        if username_matches and _check_password(password):
+        password_matches = len(password) <= 1024 and _check_password(password)
+        if username_matches and password_matches:
+            with _login_lock:
+                _login_attempts.pop(request.remote_addr or "local", None)
             session.clear()
             session.permanent = True
             session["qm_user"] = AUTH_USERNAME
@@ -246,17 +280,23 @@ def _cli_request_allowed() -> bool:
     if not origin:
         return True
     parsed = urlsplit(origin)
-    forwarded_host = request.headers.get("X-Forwarded-Host", "").split(",", 1)[0].strip()
-    return parsed.scheme in {"http", "https"} and parsed.netloc in {request.host, forwarded_host}
+    return parsed.scheme in {"http", "https"} and parsed.netloc == request.host
 
 
 @app.get("/api/cli/status")
 def cli_status():
-    return jsonify({"mode": mode(), "available": mode() == "serial", "connected": cli_session.connected})
+    return jsonify({"mode": mode(), "available": mode() == "serial" and cli_enabled(), "connected": cli_session.connected, "message": "CLI habilitada." if cli_enabled() else "CLI bloqueada. Defina QM_ENABLE_CLI=true somente em ambiente autorizado."})
+
+
+def cli_enabled():
+    return os.getenv("QM_ENABLE_CLI", "false").lower() == "true"
 
 
 @app.post("/api/cli/open")
+@_serial_exclusive
 def cli_open():
+    if not cli_enabled():
+        return jsonify({"ok": False, "error": "CLI bloqueada. Defina QM_ENABLE_CLI=true somente após validar o ambiente."}), 403
     if not _cli_request_allowed():
         return jsonify({"ok": False, "error": "Requisição bloqueada: use a interface local do Quidway Manager."}), 403
     if mode() != "serial":
@@ -269,11 +309,15 @@ def cli_open():
 
 
 @app.post("/api/cli/send")
+@_serial_exclusive
 def cli_send():
+    if not cli_enabled():
+        return jsonify({"ok": False, "error": "CLI bloqueada."}), 403
     if not _cli_request_allowed():
         return jsonify({"ok": False, "error": "Requisição bloqueada: origem inválida."}), 403
     try:
         payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict): return jsonify({"ok": False, "error": "JSON inválido."}), 400
         result = cli_session.send(payload.get("token"), payload.get("command"))
         return jsonify({"ok": True, **result})
     except SerialCLIError as exc:
@@ -281,11 +325,13 @@ def cli_send():
 
 
 @app.post("/api/cli/close")
+@_serial_exclusive
 def cli_close():
     if not _cli_request_allowed():
         return jsonify({"ok": False, "error": "Requisição bloqueada: origem inválida."}), 403
     try:
         payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict): return jsonify({"ok": False, "error": "JSON inválido."}), 400
         cli_session.close(payload.get("token"))
         return jsonify({"ok": True, "message": "Sessão serial encerrada; porta COM liberada."})
     except SerialCLIError as exc:
@@ -302,7 +348,7 @@ def status():
             return jsonify({"mode": "serial", "label": "Console serial", "ready": False, "message": str(exc)})
         return jsonify({
             "mode": "serial", "label": "Console serial", "ready": bool(cfg.port),
-            "message": f"Console serial em {cfg.port} a {cfg.baud_rate} baud. Diagnósticos são somente leitura; a aba CLI envia apenas o comando que você digitar. Feche Tera Term/MobaXterm antes de usar.",
+            "message": f"Console serial em {cfg.port} a {cfg.baud_rate} baud. Diagnósticos são somente leitura; a CLI exige autorização explícita. Feche outros programas que usam a porta antes de conectar.",
         })
     if current_mode != "real":
         return jsonify({"mode": "demo", "label": "Demonstração", "ready": True, "message": "Dados inventados para demonstrar a interface. Nada foi lido do switch."})
@@ -328,6 +374,7 @@ def demo():
 
 
 @app.post("/api/refresh")
+@_serial_exclusive
 def refresh():
     current_mode = mode()
     if current_mode not in {"real", "serial"}:
@@ -375,7 +422,7 @@ def refresh():
 
 @app.get("/api/health")
 def health():
-    return jsonify({"ok": True, "service": "Quidway Manager", "mode": mode(), "auth_required": True})
+    return jsonify({"ok": True, "service": "Quidway Manager", "mode": mode(), "auth_required": True, "auth_configured": _auth_configured()})
 
 
 @app.get("/api/connections")
@@ -444,6 +491,7 @@ def configuration_preview():
 
 
 @app.post("/api/config/apply")
+@_serial_exclusive
 def configuration_apply():
     if mode() != "serial":
         return jsonify({"ok": False, "error": "A configuração requer o modo serial local."}), 409
@@ -453,6 +501,7 @@ def configuration_apply():
         return jsonify({"ok": False, "error": "Encerre a sessão CLI antes de aplicar uma configuração pela área guiada."}), 409
     try:
         payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict): return jsonify({"ok": False, "error": "JSON inválido."}), 400
         plan = consume_preview(payload.get("token"))
         outputs = execute_plan(serial_settings(), plan)
         return jsonify({
@@ -465,6 +514,7 @@ def configuration_apply():
 
 
 @app.post("/api/config/backup")
+@_serial_exclusive
 def configuration_backup():
     if mode() != "serial":
         return jsonify({"ok": False, "error": "O backup requer o modo serial local."}), 409
@@ -482,6 +532,7 @@ def configuration_backup():
 
 
 if __name__ == "__main__":
-    # Loopback only. Use Tailscale Serve for private remote access; do not bind to 0.0.0.0.
+    # Native is loopback-only. Container publishes host loopback via Compose.
     port = int(os.getenv("QM_WEB_PORT", "8787"))
-    serve(app, host="127.0.0.1", port=port, threads=8)
+    host = "0.0.0.0" if os.getenv("QM_CONTAINER") == "1" else "127.0.0.1"
+    serve(app, host=host, port=port, threads=8)

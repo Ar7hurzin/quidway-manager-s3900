@@ -4,13 +4,15 @@ from __future__ import annotations
 import base64
 import getpass
 import hashlib
+import os
+import tempfile
 import re
 import secrets
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-SETTINGS = ROOT / "local-settings.ps1"
+SETTINGS = Path(os.environ.get("QM_SETTINGS_FILE", ROOT / "local-settings.ps1")).expanduser()
 ITERATIONS = 600_000
 
 
@@ -55,9 +57,19 @@ def main() -> int:
         f"$env:QM_SECRET_KEY = {ps_quote(secret_key)}",
         "",
     ))
-    SETTINGS.write_text("\n".join(lines), encoding="utf-8")
+    SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".qm-login-", dir=SETTINGS.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines))
+        os.replace(temporary, SETTINGS)
+        if os.name == "posix":
+            SETTINGS.chmod(0o600)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
     print(f"Login configurado para o usuário {username!r} em local-settings.ps1. A senha não foi gravada em texto puro.")
-    print("Agora execute .\\start.ps1 para reiniciar o Quidway Manager.")
+    print("Reinicie o Quidway Manager: python start.py (Windows: .\\start.ps1).")
     return 0
 
 

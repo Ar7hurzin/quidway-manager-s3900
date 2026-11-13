@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#0a1420">
+  <meta name="theme-color" content="#f2f5f8">
   <meta name="csrf-token" content="{{ csrf_token }}">
   <title>Quidway Manager</title>
   <script>document.documentElement.dataset.page = location.pathname === "/configuracao" ? "configuration" : location.pathname === "/monitoramento" ? "monitoring" : location.pathname === "/sistema" ? "system" : location.pathname === "/cli" ? "cli" : "dashboard";</script>
-  <link rel="stylesheet" href="/static/styles.css?v=20261105-6">
+  <link rel="stylesheet" href="/static/styles.css?v=20261113-light-1">
 </head>
 <body>
   <div class="frame">
@@ -182,7 +182,7 @@
 
       <section id="cli-terminal" class="section cli-section">
         <div class="section-heading"><div><div class="card-overline">CONSOLE SERIAL INTERATIVO</div><h2>CLI do Quidway</h2></div><span id="cli-state" class="subtle-tag">Desconectado</span></div>
-        <div class="config-banner cli-warning"><strong>Terminal direto:</strong> cada linha enviada é executada imediatamente no switch, sem prévia ou desfazer automático. Esta aba ignora o bloqueio QM_ENABLE_CONFIG_WRITES da configuração guiada e pode alterar o equipamento. Use um comando por vez, mantenha o cabo console conectado e revise a saída antes de continuar. A saída pode conter senhas ou hashes; ela fica visível nesta aba até você limpar a tela ou encerrá-la.</div>
+        <div class="config-banner cli-warning"><strong>Terminal direto:</strong> cada linha enviada é executada imediatamente no switch, sem prévia ou desfazer automático. Esta aba só conecta quando o acesso CLI for habilitado explicitamente por QM_ENABLE_CLI=true; pode alterar o equipamento mesmo quando a área guiada está bloqueada. Use um comando por vez, mantenha o cabo console conectado e revise a saída antes de continuar. A saída pode conter senhas ou hashes; ela fica visível nesta aba até você limpar a tela ou encerrá-la.</div>
         <article id="cli-connection" class="card panel-card cli-card">
           <div class="cli-toolbar"><div><div class="card-overline">PORTA SERIAL</div><p id="cli-connection-note" class="panel-note">O Manager usa a porta configurada em local-settings.ps1. Feche MobaXterm/Tera Term antes de conectar.</p></div><div class="cli-actions"><button id="cli-open" class="button button-primary" type="button">Conectar ao console</button><button id="cli-close" class="button button-secondary" type="button" disabled>Encerrar sessão</button></div></div>
           <div id="cli-output" class="cli-output" role="log" aria-live="polite" aria-label="Saída do terminal"><div class="cli-hint">A sessão só começa quando você clicar em Conectar. Nenhum comando de configuração será enviado automaticamente.</div></div>
@@ -197,6 +197,6 @@
       <footer class="footer"><span>Quidway Manager · configuração com prévia</span><span>Console local · acesso remoto privado via tailnet</span></footer>
     </main>
   </div>
-  <script src="/static/app.js?v=20261105-9" defer></script>
+  <script src="/static/app.js?v=20261113-light-1" defer></script>
 </body>
 </html>

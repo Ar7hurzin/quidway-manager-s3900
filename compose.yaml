@@ -1,0 +1,19 @@
+services:
+  app:
+    build: .
+    ports:
+      - "127.0.0.1:${QM_HOST_PORT:-8787}:8787"
+    environment:
+      QM_CONTAINER: "1"
+      QM_SETTINGS_FILE: /data/local-settings.ps1
+      QM_WEB_PORT: "8787"
+      QM_MODE: ${QM_MODE:-demo}
+      QM_ENABLE_CONFIG_WRITES: "false"
+      QM_ENABLE_CLI: "false"
+    volumes:
+      - qm-data:/data
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  qm-data:

@@ -21,3 +21,7 @@
 # $env:QM_KNOWN_HOSTS = 'C:\caminho\protegido\known_hosts'
 # $env:QM_SSH_KEY_FILE = 'C:\caminho\protegido\chave_privada'
 # Alternativa: defina QM_SSH_PASSWORD somente na sessão atual do PowerShell.
+
+# O terminal CLI pode alterar o equipamento: bloqueado por padrão.
+# $env:QM_ENABLE_CLI = 'false'
+# Linux: ajuste QM_SERIAL_PORT para /dev/ttyUSB0 ou /dev/ttyACM0.

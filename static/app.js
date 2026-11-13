@@ -375,12 +375,13 @@ $("apply-config-button").addEventListener("click", async () => {
   }
 });
 
+let cliAvailable = false;
 function setCliConnected(connected, note = "") {
   cliConnected = connected;
   if (connected) cliOccupiedElsewhere = false;
   $("cli-state").textContent = connected ? "Conectado · serial" : "Desconectado";
   $("cli-state").classList.toggle("cli-online", connected);
-  $("cli-open").disabled = connected || cliOccupiedElsewhere || appStatus.mode !== "serial";
+  $("cli-open").disabled = connected || cliOccupiedElsewhere || !cliAvailable || appStatus.mode !== "serial";
   $("cli-close").disabled = !connected;
   $("cli-command").disabled = !connected;
   $("cli-enter").disabled = !connected;
@@ -414,10 +415,11 @@ async function loadCliStatus() {
   try {
     const response = await fetch("/api/cli/status", { cache: "no-store" });
     const status = await response.json();
+    cliAvailable = Boolean(status.available);
     if (status.mode !== "serial" || !status.available) {
       sessionStorage.removeItem("qm_cli_token");
       cliToken = "";
-      setCliConnected(false, "O terminal integrado está disponível no modo serial. Configure QM_MODE=serial e reinicie o Manager.");
+      setCliConnected(false, status.mode === "serial" ? status.message : "Configure QM_MODE=serial e QM_ENABLE_CLI=true somente se precisar do terminal direto.");
     } else if (status.connected && cliToken) {
       setCliConnected(true, "Sessão serial recuperada nesta aba. Envie somente comandos destinados a este Quidway.");
     } else if (status.connected) {
