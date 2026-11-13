@@ -7,7 +7,7 @@
   <meta name="csrf-token" content="{{ csrf_token }}">
   <title>Quidway Manager</title>
   <script>document.documentElement.dataset.page = location.pathname === "/configuracao" ? "configuration" : location.pathname === "/monitoramento" ? "monitoring" : location.pathname === "/sistema" ? "system" : location.pathname === "/cli" ? "cli" : "dashboard";</script>
-  <link rel="stylesheet" href="/static/styles.css?v=20261113-virtual-2">
+  <link rel="stylesheet" href="/static/styles.css?v=20261113-physical-4">
 </head>
 <body>
   <div class="frame">
@@ -29,11 +29,12 @@
 
       <section id="overview" class="section device-row">
         <div id="system-info" class="device-card card"><div class="device-icon">▤</div><div class="device-info"><div class="card-overline">EQUIPAMENTO</div><h2 id="device-name">Quidway S3900</h2><p id="device-model">Modelo e firmware aguardam identificação</p></div><div id="connection-state" class="connection-state"><i></i><span>Sem conexão</span></div></div>
-        <div class="mini-card card"><span class="mini-icon teal">◉</span><div class="card-overline">PORTAS COM LINK</div><strong id="ports-count">—</strong><small>Sem leitura do switch</small></div>
-        <div class="mini-card card"><span class="mini-icon violet">⌘</span><div class="card-overline">VLANS CADASTRADAS</div><strong id="vlan-count">—</strong><small>Aguardando coleta</small></div>
-        <div class="mini-card card"><span class="mini-icon amber">◷</span><div class="card-overline">ÚLTIMA COLETA</div><strong id="last-read">—</strong><small>Atualização manual</small></div>
+        <div class="mini-card card"><span class="mini-icon teal">◉</span><div class="card-overline">PORTAS COM LINK</div><strong id="ports-count">—</strong><small id="ports-count-note">Sem leitura do switch</small></div>
+        <div class="mini-card card"><span class="mini-icon violet">⌘</span><div class="card-overline">VLANS CADASTRADAS</div><strong id="vlan-count">—</strong><small id="vlan-count-note">Aguardando coleta</small></div>
+        <div class="mini-card card"><span class="mini-icon amber">◷</span><div class="card-overline">ÚLTIMA COLETA</div><strong id="last-read">—</strong><small id="last-read-note">Atualização manual</small></div>
       </section>
 
+      <p id="physical-collection-note" class="panel-note physical-only" role="status">Aguardando leitura do console físico.</p>
       <section id="connections-panel" class="section dashboard-connections">
         <div class="section-heading"><div><div class="card-overline">PRESENÇA NO AMBIENTE</div><h2>Acessos e dispositivos conectados</h2></div><span class="subtle-tag">Atualização automática</span></div>
         <div class="connections-grid">
@@ -68,6 +69,7 @@
           <div class="panel-head"><div><div class="card-overline">PORTAS</div><h2>Mapa de interfaces</h2></div><span class="subtle-tag">Vista conceitual</span></div>
           <p id="ports-note" class="panel-note">Numeração e quantidade variam conforme o submodelo. A vista só é preenchida com dados confirmados.</p>
           <div id="port-grid" class="port-grid"><div class="empty-inline">Ainda sem leitura de interfaces.</div></div>
+          <div id="physical-port-detail" class="physical-only panel-note port-detail" data-port="1">Selecione uma porta após a coleta.</div>
           <div class="legend"><span><i class="dot dot-up"></i>Com link</span><span><i class="dot dot-down"></i>Sem link</span><span><i class="dot dot-unknown"></i>Sem leitura</span></div>
         </article>
         <article id="vlans" class="card panel-card">
@@ -199,6 +201,6 @@
       <footer class="footer"><span>Quidway Manager · configuração com prévia</span><span>Console local · acesso remoto privado via tailnet</span></footer>
     </main>
   </div>
-  <script src="/static/app.js?v=20261113-vlan-3" defer></script>
+  <script src="/static/app.js?v=20261113-physical-4" defer></script>
 </body>
 </html>
