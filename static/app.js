@@ -157,13 +157,20 @@ function renderPhysical(data, stale = false) {
 async function loadPhysicalCache() {
   try {
     const response = await fetch("/api/dashboard", {cache:"no-store"});
-    if (!response.ok) return null;
+    if (response.status === 404) {
+      $("physical-collection-note").textContent = "Servidor Python desatualizado: encerre a instância antiga e reinicie com start.py.";
+      return { incompatible: true };
+    }
+    if (!response.ok) throw new Error("API de dashboard indisponível (" + response.status + ")");
     const result = await response.json();
     if (result.snapshot) renderPhysical(result.snapshot, result.stale || result.cli_busy);
     if (result.outputs?.length) showOutputs(result.outputs);
     if (result.cli_busy) $("physical-collection-note").textContent = "Atualização pausada: terminal CLI aberto. Encerre a sessão para retomar.";
     return result;
-  } catch { return null; }
+  } catch (error) {
+    $("physical-collection-note").textContent = "Falha ao consultar dashboard: " + error.message;
+    return null;
+  }
 }
 
 async function refreshPhysical(automatic = false) {
@@ -174,7 +181,8 @@ async function refreshPhysical(automatic = false) {
   button.innerHTML = "<span>◌</span> Consultando...";
   try {
     const cache = await loadPhysicalCache();
-    if (cache?.cli_busy) return;
+    if (cache?.cli_busy || cache?.incompatible) return;
+    $("physical-collection-note").textContent = "Consultando o switch físico. Aguarde a leitura do console...";
     const response = await fetch("/api/refresh", {method:"POST", headers:{"Content-Type":"application/json","Accept":"application/json"}, body: JSON.stringify({automatic})});
     const result = await response.json();
     if (!response.ok || !result.ok) {
@@ -186,11 +194,15 @@ async function refreshPhysical(automatic = false) {
       }
       return;
     }
+    if (!result.snapshot) {
+      $("physical-collection-note").textContent = "O servidor não retornou o estado do dashboard. Reinicie a instância Python após atualizar o projeto.";
+      return;
+    }
     renderPhysical(result.snapshot, result.stale);
     showOutputs(result.outputs);
     $("ssh-message").textContent = result.message;
-  } catch {
-    $("physical-collection-note").textContent = "Não foi possível atualizar. Confira o serviço local.";
+  } catch (error) {
+    $("physical-collection-note").textContent = "Não foi possível atualizar: " + error.message;
   } finally {
     physicalRefreshBusy = false;
     button.disabled = !appStatus.ready;
