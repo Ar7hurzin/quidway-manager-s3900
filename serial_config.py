@@ -19,9 +19,11 @@ def _read_response(connection, timeout_seconds: int, allow_confirmation: bool = 
     started = time.monotonic()
     data = bytearray()
     handled_more = 0
+    last_data = started
     while time.monotonic() - started < timeout_seconds:
         block = connection.read(4096)
         if block:
+            last_data = time.monotonic()
             data.extend(block)
             if len(data) > max_bytes:
                 raise ConfigurationError("A resposta do switch excedeu o limite seguro de leitura.")
@@ -32,13 +34,15 @@ def _read_response(connection, timeout_seconds: int, allow_confirmation: bool = 
             if marker_count > handled_more:
                 connection.write(b" ")
                 handled_more = marker_count
-            if PROMPT.search(raw.rstrip()):
-                return raw, False
+        elif data and PROMPT.search(bytes(data).rstrip()) and time.monotonic() - last_data >= 0.20:
+            return bytes(data), False
+        else:
+            time.sleep(0.01)
     raise ConfigurationError("O switch não respondeu a tempo. Confira o prompt no console; não reenviei o comando.")
 
 
 def _exchange(connection, command: str, settings: SerialSettings, allow_confirmation: bool = False) -> tuple[str, bool]:
-    connection.write(command.encode("ascii") + b"\r\n")
+    connection.write(command.encode("ascii") + b"\r")
     raw, confirmation = _read_response(connection, settings.timeout_seconds, allow_confirmation=allow_confirmation)
     text = decode_switch_text(raw).replace("\r", "").strip()
     if command_rejected(text):
@@ -141,7 +145,7 @@ def execute_plan(settings: SerialSettings, plan: ConfigurationPlan) -> list[dict
     output: list[dict[str, str]] = []
     try:
         connection.reset_input_buffer()
-        connection.write(b"\r\n")
+        connection.write(b"\r")
         _read_response(connection, settings.timeout_seconds)
         version = _check_target(connection, settings)
         output.append({"command": "display version", "output": version})
@@ -155,7 +159,7 @@ def execute_plan(settings: SerialSettings, plan: ConfigurationPlan) -> list[dict
     except ConfigurationError:
         # Best effort: leave a command subview without issuing any other configuration changes.
         try:
-            connection.write(b"return\r\n")
+            connection.write(b"return\r")
         except Exception:
             pass
         raise
@@ -167,7 +171,7 @@ def export_current_configuration(settings: SerialSettings) -> tuple[bytes, str]:
     connection = _open(settings)
     try:
         connection.reset_input_buffer()
-        connection.write(b"\r\n")
+        connection.write(b"\r")
         _read_response(connection, settings.timeout_seconds)
         version = _check_target(connection, settings)
         response, _ = _exchange(connection, "display current-configuration", settings)
