@@ -100,6 +100,32 @@ def _existing_vlans(connection, settings: SerialSettings) -> set[int]:
     return _parse_vlan_inventory(response)
 
 
+def _query_vlan_presence(connection, settings: SerialSettings, vlan: int) -> bool:
+    """Verify the exact VLAN on legacy VRP; never infer absence from a bad list."""
+    if not 1 <= vlan <= 4094:
+        raise ConfigurationError("ID de VLAN inválido.")
+    connection.write(f"display vlan {vlan}".encode("ascii") + b"\r")
+    raw, _ = _read_response(connection, settings.timeout_seconds)
+    text = decode_switch_text(raw).replace("\r", "")
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+    ids = {int(value) for value in re.findall(
+        r"(?mi)^[ \t]*VLAN[ \t]+ID[ \t]*:[ \t]*([0-9]{1,4})\b", text
+    )}
+    if ids == {vlan} and not command_rejected(text):
+        return True
+    # Only an explicit, unambiguous missing-VLAN message can authorize creation.
+    absent = re.search(
+        rf"(?mi)^[ \t]*(?:%[ \t]*)?(?:Error:[ \t]*)?(?:The[ \t]+)?VLAN(?:[ \t]+{vlan})?[ \t]+(?:does[ \t]+not[ \t]+exist|doesn't[ \t]+exist|not[ \t]+found|does[ \t]+not[ \t]+exist[ \t]+in[ \t]+the[ \t]+system)[.!]?[ \t]*$",
+        text,
+    )
+    if not ids and absent:
+        return False
+    raise ConfigurationError(
+        f"Não consegui confirmar a VLAN {vlan} pela consulta display vlan {vlan}. "
+        "Nenhuma alteração foi enviada; confira a resposta na CLI."
+    )
+
+
 def _verify_vlan_preconditions(connection, settings: SerialSettings, plan: ConfigurationPlan) -> None:
     needs_catalog = plan.action in {
         "create_vlan", "rename_vlan", "delete_vlan", "set_access_port",
@@ -107,7 +133,6 @@ def _verify_vlan_preconditions(connection, settings: SerialSettings, plan: Confi
     }
     if not needs_catalog:
         return
-    existing = _existing_vlans(connection, settings)
     required: set[int] = set()
     for command in plan.commands:
         if command.startswith("vlan ") or command.startswith("undo vlan "):
@@ -122,6 +147,16 @@ def _verify_vlan_preconditions(connection, settings: SerialSettings, plan: Confi
                 required.update(int(part) for part in match.group(1).split())
         elif command.startswith("interface Vlan-interface "):
             required.add(int(command.rsplit(" ", 1)[1]))
+
+    if not required:
+        raise ConfigurationError("Não consegui identificar as VLANs do plano; nenhuma alteração foi enviada.")
+    if settings.virtual:
+        existing = _existing_vlans(connection, settings)
+    else:
+        # The physical VRP 3.10 returns a reliable per-VLAN detail, even when
+        # its global inventory contains unexpected terminal characters.
+        existing = {vlan for vlan in sorted(required)
+                    if _query_vlan_presence(connection, settings, vlan)}
 
     if plan.action == "create_vlan":
         if required & existing:
