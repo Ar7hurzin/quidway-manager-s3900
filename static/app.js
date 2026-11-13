@@ -132,6 +132,18 @@ function renderPhysical(data, stale = false) {
   }
   $("port-grid").querySelectorAll("[data-real-port]").forEach(button => button.addEventListener("click", () => detail(Number(button.dataset.realPort))));
   detail(selected);
+  const macs = data.mac_table;
+  const macList = $("physical-mac-list");
+  $("switch-device-placeholder").hidden = Boolean(macs);
+  $("switch-device-count").textContent = macs ? String(macs.count) : "N/D";
+  $("switch-connections-note").textContent = macs
+    ? "MACs aprendidos identificados · " + new Date(macs.collected_at).toLocaleTimeString("pt-BR") + ". Não é uma contagem de pessoas nem prova de link ativo."
+    : "Tabela MAC ainda indisponível ou não reconhecida neste firmware.";
+  macList.innerHTML = macs ? (macs.entries.length ? '<div class="table-wrap"><table><thead><tr><th>MAC</th><th>VLAN</th><th>Porta</th></tr></thead><tbody>' + macs.entries.slice(0,100).map(r => "<tr>" + [r.mac,r.vlan,r.port].map(v=>"<td>"+escapeHtml(v)+"</td>").join("") + "</tr>").join("") + '</tbody></table></div>' : '<div class="empty-inline">Nenhum MAC aprendido na leitura.</div>') : "";
+  if (macs && macs.entries.length > 100) macList.insertAdjacentHTML("beforeend", '<p class="panel-note">Exibindo as primeiras 100 entradas reconhecidas.</p>');
+  const traffic = ports.filter(p => p.rx_bps != null || p.tx_bps != null);
+  $("traffic-placeholder").hidden = traffic.length > 0;
+  $("physical-traffic").innerHTML = traffic.length ? '<p class="panel-note">Amostras do próprio switch; cada porta tem seu horário de coleta.</p><div class="table-wrap"><table><thead><tr><th>Porta</th><th>Entrada (bit/s)</th><th>Saída (bit/s)</th><th>Coleta</th></tr></thead><tbody>' + traffic.map(p=>"<tr>" + [p.number,p.rx_bps ?? "—",p.tx_bps ?? "—",new Date(p.collected_at).toLocaleTimeString("pt-BR")].map(v=>"<td>"+escapeHtml(v)+"</td>").join("") + "</tr>").join("") + '</tbody></table></div>' : "";
   const cards = $("system-page").querySelectorAll(".system-detail-card");
   cards[0].querySelector("h2").textContent = data.model;
   cards[0].querySelectorAll("dd")[1].textContent = data.version;
@@ -255,12 +267,14 @@ async function loadConnections() {
           return `<div class="manager-session-row"><span class="session-indicator"></span><strong>${escapeHtml(user.username)}</strong><span>${user.sessions} ${user.sessions === 1 ? "sessão" : "sessões"}</span><small>Atividade às ${escapeHtml(lastActivity)}</small></div>`;
         }).join("")
       : '<div class="empty-inline">Nenhuma sessão foi registrada nos últimos 5 minutos.</div>';
-    $("switch-device-count").textContent = "N/D";
-    $("switch-connections-note").textContent = appStatus.mode === "virtual" ? "Links virtuais não representam dispositivos físicos." : data.switch?.message || "A coleta de dispositivos ainda não está disponível.";
+    if (appStatus.mode !== "serial") {
+      $("switch-device-count").textContent = "N/D";
+      $("switch-connections-note").textContent = appStatus.mode === "virtual" ? "Links virtuais não representam dispositivos físicos." : data.switch?.message || "A coleta de dispositivos ainda não está disponível.";
+    }
   } catch (error) {
     $("manager-session-list").innerHTML = `<div class="empty-inline">${escapeHtml(error.message)}</div>`;
     $("active-session-count").textContent = "—";
-    $("switch-device-count").textContent = "N/D";
+    if (appStatus.mode !== "serial") $("switch-device-count").textContent = "N/D";
   }
 }
 
