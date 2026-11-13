@@ -78,8 +78,8 @@ function setMode(status) {
     $("connection-state").classList.remove("online");
     $("connection-state").querySelector("span").textContent = "Sem conexão";
     if (isSerial) {
-      loadPhysicalCache().then(() => { if (["dashboard","monitoring","system"].includes(pageKind)) refreshPhysical(true); });
-      if (["dashboard","monitoring","system"].includes(pageKind) && !physicalTimer) physicalTimer = window.setInterval(() => { if (!document.hidden) refreshPhysical(true); }, 12000);
+      if (["dashboard","monitoring","system"].includes(pageKind)) refreshPhysical(true);
+      else loadPhysicalCache();
     }
   }
   loadConfigurationStatus();
@@ -154,9 +154,18 @@ function renderPhysical(data, stale = false) {
   $("system-page").querySelector(".subtle-tag").textContent = stale ? "Leitura anterior" : "Leitura real";
 }
 
+function schedulePhysicalRefresh() {
+  if (appStatus.mode !== "serial" || !["dashboard","monitoring","system"].includes(pageKind)) return;
+  window.clearTimeout(physicalTimer);
+  physicalTimer = window.setTimeout(() => {
+    if (document.hidden) schedulePhysicalRefresh();
+    else refreshPhysical(true);
+  }, 12000);
+}
+
 async function loadPhysicalCache() {
   try {
-    const response = await fetch("/api/dashboard", {cache:"no-store"});
+    const response = await fetch("/api/dashboard", {cache:"no-store", signal: AbortSignal.timeout(5000)});
     if (response.status === 404) {
       $("physical-collection-note").textContent = "Servidor Python desatualizado: encerre a instância antiga e reinicie com start.py.";
       return { incompatible: true };
@@ -177,13 +186,14 @@ async function refreshPhysical(automatic = false) {
   if (appStatus.mode !== "serial" || physicalRefreshBusy) return;
   physicalRefreshBusy = true;
   const button = $("refresh");
+  window.clearTimeout(physicalTimer);
   button.disabled = true;
-  button.innerHTML = "<span>◌</span> Consultando...";
+  button.innerHTML = automatic ? "<span>◌</span> Leitura automática" : "<span>◌</span> Consultando...";
   try {
     const cache = await loadPhysicalCache();
     if (cache?.cli_busy || cache?.incompatible) return;
     $("physical-collection-note").textContent = "Consultando o switch físico. Aguarde a leitura do console...";
-    const response = await fetch("/api/refresh", {method:"POST", headers:{"Content-Type":"application/json","Accept":"application/json"}, body: JSON.stringify({automatic})});
+    const response = await fetch("/api/refresh", {method:"POST", headers:{"Content-Type":"application/json","Accept":"application/json"}, body: JSON.stringify({automatic}), signal: AbortSignal.timeout(25000)});
     const result = await response.json();
     if (!response.ok || !result.ok) {
       $("physical-collection-note").textContent = result.message || result.error || "Falha na coleta.";
@@ -201,10 +211,12 @@ async function refreshPhysical(automatic = false) {
     renderPhysical(result.snapshot, result.stale);
     showOutputs(result.outputs);
     $("ssh-message").textContent = result.message;
+    if (result.stale) $("physical-collection-note").textContent = result.message || "Leitura parcial; próxima coleta em instantes.";
   } catch (error) {
-    $("physical-collection-note").textContent = "Não foi possível atualizar: " + error.message;
+    $("physical-collection-note").textContent = error.name === "TimeoutError" || error.name === "AbortError" ? "A consulta atingiu o limite de espera. Última leitura preservada; nova tentativa em 12 segundos." : "Não foi possível atualizar: " + error.message;
   } finally {
     physicalRefreshBusy = false;
+    schedulePhysicalRefresh();
     button.disabled = !appStatus.ready;
     button.innerHTML = "<span>↻</span> Atualizar leitura";
   }
