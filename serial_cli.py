@@ -111,7 +111,7 @@ class SerialCLISession:
     def send(self, token: object, command: object) -> dict[str, object]:
         with self._lock:
             self._expire_if_idle()
-            if not self._connection or not isinstance(token, str) or not secrets.compare_digest(token, self._token or ""):
+            if not self._connection or not isinstance(token, str) or not token.isascii() or not secrets.compare_digest(token, self._token or ""):
                 raise SerialCLIError("A sessão expirou ou foi encerrada. Conecte novamente.")
             if not isinstance(command, str):
                 raise SerialCLIError("Informe um único comando de texto.")
@@ -134,7 +134,7 @@ class SerialCLISession:
 
     def close(self, token: object | None = None) -> None:
         with self._lock:
-            if self._connection and (not isinstance(token, str) or not secrets.compare_digest(token, self._token or "")):
+            if self._connection and (not isinstance(token, str) or not token.isascii() or not secrets.compare_digest(token, self._token or "")):
                 raise SerialCLIError("Token de sessão inválido.")
             self._close_unlocked()
 

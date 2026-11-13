@@ -22,6 +22,11 @@ As gravações são baseadas no manual de comandos da série S3900 Release 1510.
 
 ## Iniciar
 
+Para os comandos de uso diário e instalação em cada sistema, consulte [Comandos rápidos](docs/comandos-rapidos.md).
+
+A interface **Quidway Light** usa tema claro e o mesmo endereço local. Há um inicializador Python compartilhado para Windows/Linux; consulte [instalação nativa e Docker](docs/instalacao-docker.md) para comandos de instalação, autenticação, Docker Compose e limitações.
+
+
 Na primeira execução, abra a pasta `QuidwayManager` no VS Code. No terminal PowerShell dessa pasta, configure o login local:
 
 ```powershell
@@ -71,7 +76,7 @@ As mudanças entram primeiro na configuração em execução do switch; salvar �
 
 A rota `/cli` oferece um terminal interativo do console serial. Clique em **Conectar ao console** para abrir a COM configurada; depois digite uma única linha e pressione Enter ou **Enviar**. O app não envia comandos de configuração ao conectar; envia apenas uma linha vazia para acordar o prompt. Cada comando digitado é transmitido imediatamente. Saídas com prompts `More` são paginadas automaticamente; confirme a resposta exibida antes de prosseguir. **Enviar Enter** atende prompts que aguardam uma linha vazia.
 
-A aba CLI é um terminal de uso direto, sem prévia, backup automático ou rollback. Ela ignora `QM_ENABLE_CONFIG_WRITES=false`, que bloqueia apenas a área guiada; portanto, comandos configuradores enviados por CLI são executados mesmo com essa variável desligada. Use a área guiada para operações tipadas quando ela cobrir a tarefa. Comandos e respostas não são persistidos pela aplicação, mas podem ficar visíveis na tela do navegador até limpar a saída ou fechar a aba; a resposta do switch pode conter credenciais/hashes. Entradas são ocultadas quando o Manager detecta prompts/comandos com termos comuns de senha, mas essa detecção não cobre todos os formatos. A sessão serial é exclusiva, fecha explicitamente, no encerramento da aba ou após 20 minutos sem atividade. Enquanto ativa, monitoramento, backup e aplicação guiada são bloqueados para evitar disputa pela porta. O app não habilita SSH 1.5; o terminal integrado usa somente a porta console local e pode ser acessado remotamente pelo painel privado na tailnet.
+A aba CLI é um terminal de uso direto, sem prévia, backup automático ou rollback. A conexão CLI é desabilitada por padrão (`QM_ENABLE_CLI=false`). Após validação e autorização explícita, `QM_ENABLE_CLI=true` permite acesso ao terminal; ele não filtra comandos de configuração, mesmo se a escrita guiada permanecer bloqueada. Use a área guiada para operações tipadas quando ela cobrir a tarefa. Comandos e respostas não são persistidos pela aplicação, mas podem ficar visíveis na tela do navegador até limpar a saída ou fechar a aba; a resposta do switch pode conter credenciais/hashes. Entradas são ocultadas quando o Manager detecta prompts/comandos com termos comuns de senha, mas essa detecção não cobre todos os formatos. A sessão serial é exclusiva, fecha explicitamente, no encerramento da aba ou após 20 minutos sem atividade. Enquanto ativa, monitoramento, backup e aplicação guiada são bloqueados para evitar disputa pela porta. O app não habilita SSH 1.5; o terminal integrado usa somente a porta console local e pode ser acessado remotamente pelo painel privado na tailnet.
 
 ## Preparar SSHv2 quando o switch estiver disponível
 
@@ -94,14 +99,16 @@ Feche e inicie novamente o app após alterar configurações. No modo SSH, use *
 
 ## Limites de segurança
 
-- A interface não aceita comandos livres. As operações tipadas de configuração só podem ser enviadas quando `QM_ENABLE_CONFIG_WRITES=true`; por padrão, a gravação permanece bloqueada.
-- Todas as páginas e APIs de operação exigem login local. A sessão usa cookie HTTP-only, proteção CSRF e expira após oito horas. O endpoint de saúde fica público apenas para o script local verificar se o serviço iniciou.
-- Mantenha o servidor em `127.0.0.1`; o acesso remoto é intermediado pelo Tailscale Serve.
+- A área de configuração guiada não aceita comandos livres; a CLI tem habilitação separada. As operações tipadas de configuração só podem ser enviadas quando `QM_ENABLE_CONFIG_WRITES=true`; por padrão, a gravação permanece bloqueada.
+- Todas as páginas e APIs de operação exigem login local. A sessão usa cookie HttpOnly, SameSite=Lax, proteção CSRF e expira após oito horas. O login limita tentativas por endereço de origem; sob proxy os usuários podem compartilhar esse limite. HTTPS pode usar `QM_HTTPS_ONLY=true` para cookies Secure (não habilite no acesso HTTP local). O endpoint de saúde fica público apenas para o script local verificar se o serviço iniciou.
+- Mantenha o servidor nativo em `127.0.0.1`; Docker usa porta interna publicada somente no loopback do host. O acesso remoto privado é intermediado pelo Tailscale Serve.
 - As regras de acesso da tailnet continuam sendo uma camada necessária; limite o acesso aos seus dispositivos/usuários autorizados.
 - Não crie encaminhamento de porta no roteador nem publique o painel com Tailscale Funnel.
 - Não considere a compatibilidade, backup, monitoramento ou recuperação confirmados até validar o equipamento real.
 
 ## Documentação
+
+- [Instalação Windows, Fedora e Docker (passo a passo)](docs/instalacao-docker.md)
 
 - [Como conectar e usar (TXT)](docs/como-conectar-e-usar.txt)
 - [Módulo de configuração pela interface](docs/configuracao-interface.md)

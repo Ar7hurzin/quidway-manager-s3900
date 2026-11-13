@@ -6,7 +6,7 @@ import re
 import time
 from dataclasses import dataclass
 
-from switch_text import decode_switch_text
+from switch_text import decode_switch_text, command_rejected
 
 
 class SerialReadOnlyError(RuntimeError):
@@ -21,14 +21,14 @@ class SerialSettings:
 
     @classmethod
     def from_environment(cls) -> "SerialSettings":
-        port = os.getenv("QM_SERIAL_PORT", "COM9").strip()
+        port = os.getenv("QM_SERIAL_PORT", "COM9" if os.name == "nt" else "/dev/ttyUSB0").strip()
         try:
             baud_rate = int(os.getenv("QM_SERIAL_BAUD", "9600"))
             timeout = int(os.getenv("QM_CONNECT_TIMEOUT", "10"))
         except ValueError as exc:
             raise SerialReadOnlyError("QM_SERIAL_BAUD e QM_CONNECT_TIMEOUT devem ser números inteiros.") from exc
         if not port:
-            raise SerialReadOnlyError("Defina QM_SERIAL_PORT com a porta COM do cabo console.")
+            raise SerialReadOnlyError("Defina QM_SERIAL_PORT com a porta do cabo console (COM no Windows ou /dev/ttyUSB0 no Linux).")
         if baud_rate not in {1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200}:
             raise SerialReadOnlyError("QM_SERIAL_BAUD deve ser uma velocidade serial comum entre 1200 e 115200.")
         if not 3 <= timeout <= 60:
@@ -76,7 +76,7 @@ def collect_serial_diagnostics(settings: SerialSettings) -> list[dict[str, str]]
     try:
         import serial
     except ImportError as exc:
-        raise SerialReadOnlyError("PySerial não está instalado. Execute start.ps1 para preparar as bibliotecas.") from exc
+        raise SerialReadOnlyError("PySerial não está instalado. Instale requirements.txt no ambiente Python.") from exc
 
     try:
         with serial.Serial(
@@ -96,7 +96,10 @@ def collect_serial_diagnostics(settings: SerialSettings) -> list[dict[str, str]]
             for command in READ_ONLY_COMMANDS:
                 connection.write(command.encode("ascii") + b"\r\n")
                 raw = _read_until_prompt(connection, settings.timeout_seconds)
-                results.append({"command": command, "output": _clean_output(raw, command)})
+                output = _clean_output(raw, command)
+                if command_rejected(output):
+                    raise SerialReadOnlyError(f"O switch rejeitou a consulta {command}. Confira o firmware e o acesso.")
+                results.append({"command": command, "output": output})
             return results
     except SerialReadOnlyError:
         raise

@@ -7,19 +7,12 @@ from datetime import datetime, timezone
 
 from serial_readonly import SerialReadOnlyError, SerialSettings
 from switch_config import ConfigurationError, ConfigurationPlan
-from switch_text import decode_switch_text
+from switch_text import decode_switch_text, command_rejected
 
 
 PROMPT = re.compile(rb"(?m)(?:<[^>\r\n]+>|\[[^\]\r\n]+\])\s*$")
 CONFIRM = re.compile(rb"(?i)(?:\[\s*y\s*/\s*n\s*\]|\(y/n\)|\[y/n\])")
 MORE_MARKERS = (b"---- More ----", b"More: ")
-ERRORS = (
-    b"Unrecognized command",
-    b"Incomplete command",
-    b"Too many parameters",
-    b"Wrong parameter",
-    b"Error:",
-)
 
 
 def _read_response(connection, timeout_seconds: int, allow_confirmation: bool = False, max_bytes: int = 512_000) -> tuple[bytes, bool]:
@@ -48,8 +41,7 @@ def _exchange(connection, command: str, settings: SerialSettings, allow_confirma
     connection.write(command.encode("ascii") + b"\r\n")
     raw, confirmation = _read_response(connection, settings.timeout_seconds, allow_confirmation=allow_confirmation)
     text = decode_switch_text(raw).replace("\r", "").strip()
-    lower = text.lower()
-    if not command.lower().startswith("display ") and any(error.decode("ascii").lower() in lower for error in ERRORS):
+    if command_rejected(text):
         raise ConfigurationError(f"O switch rejeitou um comando do plano: {command}. O restante não foi enviado; confira a configuração em execução.")
     return text, confirmation
 

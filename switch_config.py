@@ -9,6 +9,7 @@ import ipaddress
 import re
 import secrets
 import time
+import threading
 from dataclasses import dataclass
 
 
@@ -25,7 +26,7 @@ class ConfigurationPlan:
 
 
 def _vlan_id(value: object) -> int:
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not (isinstance(value, int) or (isinstance(value, str) and re.fullmatch(r"[0-9]{1,4}", value))):
         raise ConfigurationError("O ID da VLAN deve ser um número entre 1 e 4094.")
     try:
         vlan_id = int(value)
@@ -44,7 +45,7 @@ def _vlan_list(value: object, field: str = "VLANs") -> list[int]:
 
 
 def _port(value: object) -> tuple[int, str]:
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not (isinstance(value, int) or (isinstance(value, str) and re.fullmatch(r"[0-9]{1,4}", value))):
         raise ConfigurationError("Selecione uma porta entre 1 e 28.")
     try:
         number = int(value)
@@ -83,6 +84,8 @@ def build_plan(payload: object) -> ConfigurationPlan:
     if not isinstance(payload, dict):
         raise ConfigurationError("A solicitação de configuração está inválida.")
     action = payload.get("action")
+    if not isinstance(action, str):
+        raise ConfigurationError("Operação de configuração não reconhecida.")
     warnings: list[str] = [
         "As mudanças entram imediatamente na configuração em execução. Use o console serial local para manter acesso ao switch.",
         "A sintaxe está baseada no Command Manual da série S3900; o release VRP 3.10(CN) RELEASE 0002 deste aparelho ainda requer validação específica antes de habilitar gravações.",
@@ -152,7 +155,7 @@ def build_plan(payload: object) -> ConfigurationPlan:
             summary = f"Alterar descrição da porta {number}"
         else:
             state = payload.get("state")
-            if state not in {"up", "down"}:
+            if not isinstance(state, str) or state not in {"up", "down"}:
                 raise ConfigurationError("Estado da porta inválido.")
             command = "undo shutdown" if state == "up" else "shutdown"
             commands = tuple(base + [command, "quit", "return"])
@@ -172,7 +175,7 @@ def build_plan(payload: object) -> ConfigurationPlan:
             interface = ipaddress.IPv4Interface(f"{payload.get('ip')}/{payload.get('prefix')}")
         except (ValueError, TypeError) as exc:
             raise ConfigurationError("Informe um IPv4 válido e um prefixo de 1 a 30.") from exc
-        if interface.network.prefixlen < 1 or interface.network.prefixlen > 30 or interface.ip.is_multicast or interface.ip.is_unspecified:
+        if interface.network.prefixlen < 1 or interface.network.prefixlen > 30 or interface.ip.is_multicast or interface.ip.is_unspecified or interface.ip in {interface.network.network_address, interface.network.broadcast_address}:
             raise ConfigurationError("O endereço de gestão precisa ser IPv4 unicast com prefixo entre /1 e /30.")
         mask = str(interface.network.netmask)
         commands = ("system-view", f"interface Vlan-interface {vlan}", f"ip address {interface.ip} {mask}", "quit", "return")
@@ -205,23 +208,31 @@ def build_plan(payload: object) -> ConfigurationPlan:
     raise ConfigurationError("Operação de configuração não reconhecida.")
 
 
-_PREVIEWS: dict[str, tuple[float, ConfigurationPlan]] = {}
+_PREVIEWS: dict[str, tuple[float, ConfigurationPlan, str]] = {}
+_PREVIEWS_LOCK = threading.Lock()
 
 
-def issue_preview(plan: ConfigurationPlan, lifetime_seconds: int = 300) -> str:
+def issue_preview(plan: ConfigurationPlan, lifetime_seconds: int = 300, *, owner: object) -> str:
+    if not isinstance(owner, str) or not owner:
+        raise ConfigurationError("Sessão inválida. Entre novamente.")
     now = time.monotonic()
-    expired = [key for key, (expiry, _) in _PREVIEWS.items() if expiry < now]
-    for key in expired:
-        _PREVIEWS.pop(key, None)
-    token = secrets.token_urlsafe(32)
-    _PREVIEWS[token] = (now + lifetime_seconds, plan)
-    return token
+    with _PREVIEWS_LOCK:
+        for key, (expiry, _, _) in list(_PREVIEWS.items()):
+            if expiry <= now:
+                _PREVIEWS.pop(key, None)
+        if len(_PREVIEWS) >= 256:
+            raise ConfigurationError("Limite de prévias atingido. Aguarde a expiração de uma prévia.")
+        token = secrets.token_urlsafe(32)
+        _PREVIEWS[token] = (now + lifetime_seconds, plan, owner)
+        return token
 
 
-def consume_preview(token: object) -> ConfigurationPlan:
-    if not isinstance(token, str):
+def consume_preview(token: object, *, owner: object) -> ConfigurationPlan:
+    if not isinstance(token, str) or not isinstance(owner, str):
         raise ConfigurationError("Prévia ausente. Gere uma nova prévia.")
-    entry = _PREVIEWS.pop(token, None)
-    if not entry or entry[0] < time.monotonic():
-        raise ConfigurationError("A prévia expirou ou já foi usada. Gere uma nova prévia.")
-    return entry[1]
+    with _PREVIEWS_LOCK:
+        entry = _PREVIEWS.get(token)
+        if not entry or entry[0] <= time.monotonic() or entry[2] != owner:
+            raise ConfigurationError("A prévia expirou, já foi usada ou pertence a outra sessão. Gere uma nova prévia.")
+        del _PREVIEWS[token]
+        return entry[1]
