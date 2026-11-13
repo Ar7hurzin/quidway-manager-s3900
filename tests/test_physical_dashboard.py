@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch, Mock
 from collections import deque
 from physical_dashboard import (PhysicalDashboard, parse_identity, parse_port,
-                                parse_brief, parse_vlan_detail)
+                                parse_brief, parse_vlan_detail, parse_mac_table)
 from serial_config import _parse_vlan_inventory
 from serial_readonly import SerialSettings, SerialReadOnlyError
 
@@ -44,6 +44,13 @@ class PhysicalDashboardTest(unittest.TestCase):
         self.assertIsNone(parse_vlan_detail(DETAIL,11))
         self.assertEqual(parse_brief("Ethernet1/0/1 UP 100M\nEthernet1/0/2 DOWN\n")[2]["state"],"down")
 
+    def test_mac_table(self):
+        result = parse_mac_table("00e0-fc12-3456 12 Learned Ethernet1/0/1 AGING\n00e0-fc12-3456 11 Dynamic Ethernet1/0/2\n")
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(len(result["entries"]), 2)
+        self.assertIsNone(parse_mac_table("Unrecognized command"))
+        self.assertEqual(parse_mac_table("Total MAC addresses: 0")["count"], 0)
+
     def test_read_only_cache_and_partial_ports(self):
         d = PhysicalDashboard()
         settings = SerialSettings("/dev/ttyUSB0",9600,3)
@@ -58,6 +65,7 @@ class PhysicalDashboardTest(unittest.TestCase):
             b"Ethernet1/0/3 current state : DOWN\nPVID: 1",
             b"VLAN ID: 1\nTagged Ports: none\nUntagged Ports: none",
             b"VLAN ID: 11\nDescription: LAB\nTagged Ports: none\nUntagged Ports: none",
+            b"00e0-fc12-3456 12 Learned Ethernet1/0/1 AGING",
         ])
         with patch("physical_dashboard.open_connection",return_value=conn), \
              patch("physical_dashboard._read_until_prompt",side_effect=lambda *a: responses.popleft()):
