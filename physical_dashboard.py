@@ -98,6 +98,31 @@ def parse_vlan_detail(text, vlan):
             "note": "Console", "collected_at": now()}
 
 
+def parse_mac_table(text):
+    """Recognize legacy learned-MAC rows; never guess from arbitrary text."""
+    text = terminal_text(text)
+    pattern = re.compile(
+        r"(?mi)^[ \t]*([0-9a-f]{4}(?:-[0-9a-f]{4}){2}|[0-9a-f]{2}(?::[0-9a-f]{2}){5})"
+        r"[ \t]+([0-9]{1,4})[ \t]+(?:learned|dynamic)[ \t]+"
+        r"((?:GigabitEthernet|Ethernet)1/[01]/[0-9]{1,2})\b"
+    )
+    rows = []
+    interfaces = {interface_name(n).lower(): n for n in range(1, 29)}
+    for m in pattern.finditer(text):
+        port = interfaces.get(m[3].lower())
+        vlan = int(m[2])
+        if port is None or not 1 <= vlan <= 4094:
+            continue
+        mac = re.sub(r"[:-]", "", m[1]).lower()
+        mac = ":".join(mac[i:i+2] for i in range(0,12,2))
+        rows.append({"mac": mac, "vlan": vlan, "port": port})
+    if rows:
+        return {"entries": rows, "count": len({r["mac"] for r in rows}), "collected_at": now()}
+    if re.search(r"(?mi)^[ \t]*(?:Total(?:[ \t]+MAC[ \t]+addresses?|[ \t]+items?|[ \t]+entries)?[ \t]*:[ \t]*0|No[ \t]+MAC[ \t]+address(?:es)?(?:[ \t]+found)?)[.!]?[ \t]*$", text):
+        return {"entries": [], "count": 0, "collected_at": now()}
+    return None
+
+
 class PhysicalDashboard:
     """Single-process cache, accessed under the application's serial request lock."""
     def __init__(self):
@@ -110,6 +135,7 @@ class PhysicalDashboard:
         self.port_cursor = 0
         self.vlan_cursor = 0
         self.brief_supported = None
+        self.mac_attempt = 0.0
         self.settings_key = None
         self.dirty = True
         self.error = None
@@ -191,6 +217,13 @@ class PhysicalDashboard:
                     detail = parse_vlan_detail(query(connection, f"display vlan {v}") or "", v)
                     if detail:
                         vlans[idx] = detail
+                if time.monotonic() - self.mac_attempt >= 60 or not self.mac_attempt:
+                    self.mac_attempt = time.monotonic()
+                    try:
+                        data["mac_table"] = parse_mac_table(query(connection, "display mac-address") or "")
+                    except SerialReadOnlyError:
+                        data["mac_table"] = None
+                        notes.append("Tabela MAC indisponível nesta coleta.")
             data.update(collected_at=now(), port=settings.port, baud_rate=settings.baud_rate,
                         notes=notes, expected_ports=28)
             self.data = data
