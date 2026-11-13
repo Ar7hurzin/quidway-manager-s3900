@@ -135,6 +135,7 @@ class PhysicalDashboard:
         self.last_success = 0.0
         self.port_cursor = 0
         self.vlan_cursor = 0
+        self.stage = 0
         self.brief_supported = None
         self.mac_attempt = 0.0
         self.priority_ports = set()
@@ -167,6 +168,7 @@ class PhysicalDashboard:
                 "message": self.error, "collected_at": self.data.get("collected_at") if self.data else None}
 
     def collect(self, settings, force=False):
+        """One small serial transaction per poll; keep previously read fields."""
         key = (settings.port, settings.baud_rate)
         if self.settings_key != key:
             self.reset()
@@ -176,95 +178,145 @@ class PhysicalDashboard:
         self.last_attempt = time.monotonic()
         self.error = None
         outputs = []
-        # Work on a private copy; publish atomically after collection.
         data = copy.deepcopy(self.data) if self.data else {"ports": [
             {"number": n, "interface": interface_name(n), "state": None, "admin": None,
              "pvid": None, "mode": None, "description": None, "tagged": None,
              "untagged": None, "rx_bps": None, "tx_bps": None, "collected_at": None}
             for n in range(1, 29)], "vlans": None}
         notes = []
+        timeout = min(settings.timeout_seconds, 6)
+        deadline = time.monotonic() + 16
+        active_command = "abrir console"
+
+        def read(connection):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SerialReadOnlyError("Limite de tempo da coleta atingido.")
+            return _read_until_prompt(connection, min(timeout, remaining))
+
         def query(connection, command):
+            nonlocal active_command
+            active_command = command
             connection.write(command.encode("ascii") + b"\r")
-            raw = _read_until_prompt(connection, settings.timeout_seconds)
+            raw = read(connection)
             output = _clean_output(raw, command)
             outputs.append({"command": command, "output": output})
             return None if command_rejected(output) else output
+
+        def publish():
+            data.update(collected_at=now(), port=settings.port, baud_rate=settings.baud_rate,
+                        notes=notes, expected_ports=28)
+            self.data = copy.deepcopy(data)
+            self.outputs = copy.deepcopy(outputs)
+            self.last_success = time.monotonic()
+            self.dirty = False
+
+        def inventory(connection):
+            try:
+                ids = _parse_vlan_inventory(query(connection, "display vlan") or "")
+            except ConfigurationError as exc:
+                data["vlans"] = None
+                notes.append(str(exc))
+                return
+            prior = {v["id"]: v for v in data["vlans"] or []}
+            data["vlans"] = [prior.get(v, {"id": v, "name": None, "members": None,
+                                           "note": "Console", "collected_at": None}) for v in sorted(ids)]
+
+        def port_detail(connection, n):
+            port = parse_port(query(connection, "display interface " + interface_name(n)) or "", n)
+            if port:
+                old = data["ports"][n-1]
+                if port["state"] is not None:
+                    port["link_at"] = port["collected_at"]
+                else:
+                    port["state"] = old.get("state")
+                    port["link_at"] = old.get("link_at")
+                old.update(port)
+            else:
+                notes.append(f"Porta {n}: resposta sem dados reconhecidos.")
+
+        def vlan_detail(connection, v):
+            detail = parse_vlan_detail(query(connection, f"display vlan {v}") or "", v)
+            if detail:
+                for idx, row in enumerate(data["vlans"] or []):
+                    if row["id"] == v:
+                        data["vlans"][idx] = detail
+                        break
+
         try:
             with open_connection(settings) as connection:
                 connection.reset_input_buffer()
                 connection.write(b"\r")
-                _read_until_prompt(connection, settings.timeout_seconds)
-                identity = parse_identity(query(connection, "display version") or "")
-                data.update(identity, name=identity["model"])
-                # Inventory is independent of optional details. Never retain a
-                # previous count as a fresh observation if parsing fails.
-                try:
-                    inventory = _parse_vlan_inventory(query(connection, "display vlan") or "")
-                    prior = {v["id"]: v for v in data["vlans"] or []}
-                    data["vlans"] = [prior.get(v, {"id": v, "name": None, "members": None, "note": "Console", "collected_at": None}) for v in sorted(inventory)]
-                except ConfigurationError as exc:
-                    data["vlans"] = None
-                    notes.append(str(exc))
-                if self.brief_supported is not False:
-                    brief = query(connection, "display interface brief")
-                    states = parse_brief(brief or "")
-                    self.brief_supported = bool(states)
-                    for number, fields in states.items():
-                        data["ports"][number-1].update(fields)
-                selected_ports = sorted(self.priority_ports)[:PORT_BATCH]
-                while len(selected_ports) < PORT_BATCH:
-                    n = self.port_cursor % 28 + 1
-                    self.port_cursor += 1
-                    if n not in selected_ports:
-                        selected_ports.append(n)
-                for n in selected_ports:
-                    output = query(connection, "display interface " + interface_name(n))
-                    port = parse_port(output or "", n)
-                    if port:
-                        old = data["ports"][n-1]
-                        if port["state"] is not None:
-                            port["link_at"] = port["collected_at"]
-                        else:
-                            port["state"] = old.get("state")
-                            port["link_at"] = old.get("link_at")
-                        data["ports"][n-1].update(port)
-                    else:
-                        notes.append(f"Porta {n}: resposta sem dados reconhecidos.")
-                vlans = data["vlans"] or []
-                vlan_indices = {row["id"]: idx for idx,row in enumerate(vlans)}
-                selected_vlans = [vlan_indices[v] for v in sorted(self.priority_vlans) if v in vlan_indices][:VLAN_BATCH]
-                while len(selected_vlans) < min(VLAN_BATCH, len(vlans)):
-                    idx = self.vlan_cursor % len(vlans)
-                    self.vlan_cursor += 1
-                    if idx not in selected_vlans:
-                        selected_vlans.append(idx)
-                for idx in selected_vlans:
-                    v = vlans[idx]["id"]
-                    detail = parse_vlan_detail(query(connection, f"display vlan {v}") or "", v)
-                    if detail:
-                        vlans[idx] = detail
-                if time.monotonic() - self.mac_attempt >= 60 or not self.mac_attempt:
-                    self.mac_attempt = time.monotonic()
-                    try:
+                read(connection)
+                if self.data is None:
+                    # Publish identity immediately, even if the VLAN query fails.
+                    identity = parse_identity(query(connection, "display version") or "")
+                    data.update(identity, name=identity["model"])
+                    publish()
+                    inventory(connection)
+                    publish()
+                elif self.dirty or force:
+                    # Manual refresh and configuration invalidation prioritize inventory.
+                    inventory(connection)
+                    publish()
+                    if self.priority_ports:
+                        n = min(self.priority_ports)
+                        self.priority_ports.discard(n)
+                        port_detail(connection, n)
+                        publish()
+                    elif self.priority_vlans:
+                        v = min(self.priority_vlans)
+                        self.priority_vlans.discard(v)
+                        if any(row["id"] == v for row in data["vlans"] or []):
+                            vlan_detail(connection, v)
+                            publish()
+                else:
+                    # Rotate independent queries. A slow/unsupported optional
+                    # command never holds back the initial dashboard.
+                    stage = self.stage % 6
+                    self.stage += 1
+                    if self.priority_ports:
+                        n = min(self.priority_ports)
+                        self.priority_ports.discard(n)
+                        port_detail(connection, n)
+                    elif self.priority_vlans:
+                        v = min(self.priority_vlans)
+                        self.priority_vlans.discard(v)
+                        if any(row["id"] == v for row in data["vlans"] or []):
+                            vlan_detail(connection, v)
+                    elif stage == 0:
+                        inventory(connection)
+                    elif stage == 1 and self.brief_supported is None:
+                        self.brief_supported = False  # Don't retry a timed-out optional command forever.
+                        states = parse_brief(query(connection, "display interface brief") or "")
+                        self.brief_supported = bool(states)
+                        for number, fields in states.items():
+                            data["ports"][number-1].update(fields)
+                    elif stage == 4 and data["vlans"]:
+                        rows = data["vlans"]
+                        v = rows[self.vlan_cursor % len(rows)]["id"]
+                        self.vlan_cursor += 1
+                        vlan_detail(connection, v)
+                    elif stage == 5 and (not self.mac_attempt or time.monotonic() - self.mac_attempt >= 60):
+                        self.mac_attempt = time.monotonic()
                         data["mac_table"] = parse_mac_table(query(connection, "display mac-address") or "")
-                    except SerialReadOnlyError:
-                        data["mac_table"] = None
-                        notes.append("Tabela MAC indisponível nesta coleta.")
-            data.update(collected_at=now(), port=settings.port, baud_rate=settings.baud_rate,
-                        notes=notes, expected_ports=28)
-            self.priority_ports.difference_update(selected_ports)
-            self.priority_vlans.difference_update(vlans[i]["id"] for i in selected_vlans)
-            self.data = data
-            self.outputs = outputs
-            self.last_success = time.monotonic()
-            self.dirty = False
+                    else:
+                        n = self.port_cursor % 28 + 1
+                        self.port_cursor += 1
+                        port_detail(connection, n)
+                    publish()
             return self.cached()
         except (SerialReadOnlyError, OSError, ValueError) as exc:
-            self.error = str(exc)
-            self.dirty = True
-            # Keep the last successful snapshot, explicitly marked stale.
+            self.error = f"Falha em {active_command}: {exc}"
+            # Do not retry the same optional operation immediately; preserve
+            # last successful fields and explicitly report the failing command.
+            self.dirty = False
+            if self.data is not None:
+                return self.cached()
             raise SerialReadOnlyError(self.error) from exc
         except Exception as exc:
-            self.error = "Falha de leitura serial. Confira o cabo e a sessão CLI."
-            self.dirty = True
+            self.error = f"Falha de leitura serial em {active_command}. Confira o cabo e a sessão CLI."
+            self.dirty = False
+            if self.data is not None:
+                return self.cached()
             raise SerialReadOnlyError(self.error) from exc
