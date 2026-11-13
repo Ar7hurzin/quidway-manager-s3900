@@ -46,9 +46,11 @@ def _read_until_prompt(connection, timeout_seconds: int, max_bytes: int = 256_00
     start = time.monotonic()
     data = bytearray()
     handled_more = 0
+    last_data = start
     while time.monotonic() - start < timeout_seconds:
         block = connection.read(4096)
         if block:
+            last_data = time.monotonic()
             data.extend(block)
             if len(data) > max_bytes:
                 raise SerialReadOnlyError("A saída do switch excedeu o limite seguro de leitura.")
@@ -56,8 +58,10 @@ def _read_until_prompt(connection, timeout_seconds: int, max_bytes: int = 256_00
             if marker_count > handled_more:
                 connection.write(b" ")
                 handled_more = marker_count
-            if PROMPT.search(bytes(data).rstrip()):
-                return bytes(data)
+        elif data and PROMPT.search(bytes(data).rstrip()) and time.monotonic() - last_data >= 0.20:
+            return bytes(data)
+        else:
+            time.sleep(0.01)
     raise SerialReadOnlyError("Tempo esgotado esperando o prompt do console. Nenhuma configuração foi alterada.")
 
 
@@ -88,11 +92,11 @@ def collect_serial_diagnostics(settings: SerialSettings) -> list[dict[str, str]]
         with open_connection(settings) as connection:
             # Wake a quiet console with an empty line, then require a recognizable VRP prompt.
             connection.reset_input_buffer()
-            connection.write(b"\r\n")
+            connection.write(b"\r")
             _read_until_prompt(connection, settings.timeout_seconds)
             results: list[dict[str, str]] = []
             for command in READ_ONLY_COMMANDS:
-                connection.write(command.encode("ascii") + b"\r\n")
+                connection.write(command.encode("ascii") + b"\r")
                 raw = _read_until_prompt(connection, settings.timeout_seconds)
                 output = _clean_output(raw, command)
                 if command_rejected(output):
