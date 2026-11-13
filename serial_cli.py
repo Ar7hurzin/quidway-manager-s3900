@@ -56,10 +56,15 @@ class SerialCLISession:
         started = time.monotonic()
         data = bytearray()
         handled_more = 0
+        last_data = started
         while time.monotonic() - started < timeout:
             block = self._connection.read(4096)
             if not block:
+                if data and (PROMPT.search(bytes(data).rstrip()) or INPUT_PROMPT.search(bytes(data).rstrip())) and time.monotonic() - last_data >= 0.20:
+                    return bytes(data), True
+                time.sleep(0.01)
                 continue
+            last_data = time.monotonic()
             data.extend(block)
             if len(data) > MAX_OUTPUT_BYTES:
                 self._close_unlocked()
@@ -69,8 +74,6 @@ class SerialCLISession:
             if marker_count > handled_more:
                 self._connection.write(b" ")
                 handled_more = marker_count
-            if PROMPT.search(raw.rstrip()) or INPUT_PROMPT.search(raw.rstrip()):
-                return raw, True
         return bytes(data), False
 
     @staticmethod
@@ -87,7 +90,7 @@ class SerialCLISession:
                 self._settings = settings
                 self._connection.reset_input_buffer()
                 # Blank line only wakes the console prompt; no configuration command is sent.
-                self._connection.write(b"\r\n")
+                self._connection.write(b"\r")
                 raw, complete = self._read_response(settings.timeout_seconds)
                 self._token = secrets.token_urlsafe(32)
                 self._last_activity = time.monotonic()
@@ -113,7 +116,7 @@ class SerialCLISession:
             if any(ord(ch) < 0x20 or ord(ch) > 0x7E for ch in command):
                 raise SerialCLIError("Use somente caracteres ASCII visíveis e envie um comando por vez. Quebras de linha e controles não são aceitos.")
             try:
-                self._connection.write(command.encode("ascii") + b"\r\n")
+                self._connection.write(command.encode("ascii") + b"\r")
                 raw, complete = self._read_response(self._settings.timeout_seconds)
                 self._last_activity = time.monotonic()
                 self._schedule_idle_close()
