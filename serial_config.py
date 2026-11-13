@@ -63,7 +63,7 @@ def _parse_vlan_inventory(response: str) -> set[int]:
     response = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", response)
     inventory = re.search(r"(?i)following VLAN exist\(s\):[ \t]*\r?\n?", response)
     if inventory:
-        token = r"([0-9]{1,4})(?:[ \t]*\([^()\r\n]*\))?"
+        token = r"([0-9]{1,4})(?:[ \t]*-[ \t]*([0-9]{1,4}))?(?:[ \t]*\([^()\r\n]*\))?"
         row = re.compile(token + r"(?:[ \t]*,[ \t]*" + token + r")*[ \t]*,?")
         for raw_line in response[inventory.end():].split("\n"):
             line = raw_line.strip().rstrip("\x00\x07\x08\x1a\x7f\ufffd\u25a1\u25ab").rstrip()
@@ -77,9 +77,9 @@ def _parse_vlan_inventory(response: str) -> set[int]:
                 raise ConfigurationError("Não consegui interpretar toda a lista de VLANs; nenhuma alteração foi enviada.")
             for item in line.rstrip(",").split(","):
                 match = re.fullmatch(token, item.strip())
-                if not match or not 1 <= int(match.group(1)) <= 4094:
+                if not match or not 1 <= int(match.group(1)) <= int(match.group(2) or match.group(1)) <= 4094:
                     raise ConfigurationError("ID de VLAN inválido no retorno do switch; nenhuma alteração foi enviada.")
-                vlan_ids.add(int(match.group(1)))
+                vlan_ids.update(range(int(match.group(1)), int(match.group(2) or match.group(1)) + 1))
         # Never fall back to the first ID of a malformed comma-separated list.
     else:
         vlan_ids.update(
