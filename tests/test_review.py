@@ -1,12 +1,13 @@
 """Regression tests for input validation and switch-response handling."""
 import unittest
 from collections import deque
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 from switch_config import ConfigurationError, build_plan, issue_preview, consume_preview
 from switch_text import command_rejected
 from ssh_readonly import _read_until_prompt
-from serial_config import _parse_vlan_inventory
+from serial_config import _parse_vlan_inventory, _query_vlan_presence, _verify_vlan_preconditions
+from serial_readonly import SerialSettings
 
 class ReviewTest(unittest.TestCase):
     def test_malformed_action_and_state(self):
@@ -53,6 +54,40 @@ class ReviewTest(unittest.TestCase):
             _parse_vlan_inventory("Following VLAN exist(s):\n1(default), 12, unknown\n<Quidway>")
         with self.assertRaises(ConfigurationError):
             _parse_vlan_inventory("Following VLAN exist(s):\n1(default), 4095,\n<Quidway>")
+
+    def test_physical_vlan_detail_bypasses_legacy_catalog(self):
+        settings = SerialSettings("/dev/ttyUSB0", 9600, 3)
+        connection = Mock()
+        raw = (b"display vlan 12\r\n VLAN ID: 12\r\n VLIN Type: static\r\n"
+               b" Route Interface: not configured\r\n Tagged Ports: none\r\n"
+               b" Untagged Ports: none\r\n<Quidway>")
+        with patch("serial_config._read_response", return_value=(raw, False)), \
+             patch("serial_config._existing_vlans", side_effect=AssertionError("catalog not needed")):
+            for action in ("rename_vlan", "set_access_port", "set_management_ip", "delete_vlan"):
+                plan = build_plan({"action": action, "vlan_id": 12, "name": "LAB",
+                                   "port": 1, "ip": "192.168.100.1", "prefix": 24})
+                _verify_vlan_preconditions(connection, settings, plan)
+        self.assertEqual(connection.write.call_count, 4)
+        connection.write.assert_called_with(b"display vlan 12\r")
+
+    def test_physical_vlan_absence_and_ambiguous_responses(self):
+        settings = SerialSettings("/dev/ttyUSB0", 9600, 3)
+        connection = Mock()
+        create = build_plan({"action": "create_vlan", "vlan_id": 12, "name": "LAB"})
+        rename = build_plan({"action": "rename_vlan", "vlan_id": 12, "name": "LAB"})
+        with patch("serial_config._read_response", return_value=(b"Error: The VLAN does not exist.\r\n<Quidway>", False)):
+            self.assertFalse(_query_vlan_presence(connection, settings, 12))
+            _verify_vlan_preconditions(connection, settings, create)
+            with self.assertRaises(ConfigurationError):
+                _verify_vlan_preconditions(connection, settings, rename)
+        with patch("serial_config._read_response", return_value=(b"VLAN ID: 12\r\n<Quidway>", False)):
+            with self.assertRaises(ConfigurationError):
+                _verify_vlan_preconditions(connection, settings, create)
+        for raw in (b"<Quidway>", b"VLAN ID: 13\r\n<Quidway>",
+                    b"Error: access denied\r\n<Quidway>", b"VLAN 13 does not exist.\r\n<Quidway>"):
+            with self.subTest(raw=raw), patch("serial_config._read_response", return_value=(raw, False)):
+                with self.assertRaises(ConfigurationError):
+                    _verify_vlan_preconditions(connection, settings, create)
 
     def test_ssh_pagination(self):
         class FakeChannel:
