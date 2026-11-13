@@ -132,6 +132,7 @@ class PhysicalDashboard:
         self.data = None
         self.outputs = []
         self.last_attempt = 0.0
+        self.last_success = 0.0
         self.port_cursor = 0
         self.vlan_cursor = 0
         self.brief_supported = None
@@ -162,7 +163,7 @@ class PhysicalDashboard:
 
     def cached(self):
         return {"snapshot": copy.deepcopy(self.data), "outputs": copy.deepcopy(self.outputs),
-                "stale": self.dirty or bool(self.error) or time.monotonic() - self.last_attempt > INTERVAL * 3,
+                "stale": self.dirty or bool(self.error) or time.monotonic() - self.last_success > INTERVAL * 3,
                 "message": self.error, "collected_at": self.data.get("collected_at") if self.data else None}
 
     def collect(self, settings, force=False):
@@ -255,6 +256,7 @@ class PhysicalDashboard:
             self.priority_vlans.difference_update(vlans[i]["id"] for i in selected_vlans)
             self.data = data
             self.outputs = outputs
+            self.last_success = time.monotonic()
             self.dirty = False
             return self.cached()
         except (SerialReadOnlyError, OSError, ValueError) as exc:
