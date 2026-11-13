@@ -26,6 +26,9 @@ from serial_cli import SerialCLIError, cli_session
 from ssh_readonly import SwitchSettings, SSHReadOnlyError, collect_diagnostics
 from switch_config import ConfigurationError, build_plan, consume_preview, issue_preview
 from virtual_switch import snapshot as virtual_snapshot
+from physical_dashboard import PhysicalDashboard
+
+physical_dashboard = PhysicalDashboard()
 
 atexit.register(cli_session.shutdown)
 
@@ -347,6 +350,7 @@ def cli_close():
         payload = request.get_json(silent=True) or {}
         if not isinstance(payload, dict): return jsonify({"ok": False, "error": "JSON inválido."}), 400
         cli_session.close(payload.get("token"))
+        if mode() == "serial": physical_dashboard.invalidate()
         return jsonify({"ok": True, "message": "Sessão virtual encerrada." if mode() == "virtual" else "Sessão serial encerrada; porta COM liberada."})
     except SerialCLIError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
@@ -421,12 +425,13 @@ def refresh():
             if cli_session.connected:
                 return jsonify({"mode": "serial", "ok": False, "message": "Encerre a sessão CLI antes de abrir uma nova consulta serial.", "collected_at": datetime.now(timezone.utc).isoformat(), "outputs": []}), 409
             cfg = serial_settings()
-            outputs = collect_serial_diagnostics(cfg)
+            payload = request.get_json(silent=True)
+            automatic = isinstance(payload, dict) and payload.get("automatic") is True
+            reading = physical_dashboard.collect(cfg, force=not automatic)
             return jsonify({
                 "mode": "serial", "ok": True,
-                "message": "Consultas concluídas pelo console serial. Saídas brutas; interpretação do firmware ainda precisa ser validada.",
-                "collected_at": datetime.now(timezone.utc).isoformat(),
-                "outputs": outputs,
+                "message": "Leitura física concluída. Portas e detalhes de VLAN são coletados em lotes.",
+                **reading,
             })
         cfg = switch_settings()
         outputs = collect_diagnostics(cfg)
@@ -450,6 +455,14 @@ def refresh():
             "collected_at": datetime.now(timezone.utc).isoformat(),
             "outputs": [],
         }), 503
+
+
+@app.get("/api/dashboard")
+def dashboard_cache():
+    if mode() != "serial":
+        return jsonify({"error": "Cache disponível somente no modo serial físico."}), 409
+    result = physical_dashboard.cached()
+    return jsonify({"mode": "serial", "ok": True, "cli_busy": cli_session.connected, **result})
 
 
 @app.get("/api/health")
@@ -541,6 +554,7 @@ def configuration_apply():
         payload = request.get_json(silent=True) or {}
         if not isinstance(payload, dict): return jsonify({"ok": False, "error": "JSON inválido."}), 400
         plan = consume_preview(payload.get("token"), owner=session.get("qm_session_id"))
+        if mode() == "serial": physical_dashboard.invalidate()
         outputs = execute_plan(serial_settings(), plan)
         return jsonify({
             "ok": True, "summary": plan.summary,
