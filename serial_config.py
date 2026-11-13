@@ -53,34 +53,47 @@ def _check_target(connection, settings: SerialSettings) -> str:
     return response
 
 
-def _existing_vlans(connection, settings: SerialSettings) -> set[int]:
-    response, _ = _exchange(connection, "display vlan", settings)
+def _parse_vlan_inventory(response: str) -> set[int]:
+    """Parse VRP inventory, including legacy trailing comma/control characters."""
     vlan_ids: set[int] = set()
-
-    # VRP 3.10 can report the VLAN inventory as a comma-separated list, e.g.
-    # "1 (default), 10". Parse that section separately so every ID is kept.
-    inventory = re.search(r"(?i)following VLAN exist\(s\):\s*", response)
+    response = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", response)
+    inventory = re.search(r"(?i)following VLAN exist\(s\):[ \t]*\r?\n?", response)
     if inventory:
-        for line in response[inventory.end():].splitlines():
-            line = line.strip()
-            if not line or line.startswith(("<", "[")):
+        token = r"([0-9]{1,4})(?:[ \t]*\([^()\r\n]*\))?"
+        row = re.compile(token + r"(?:[ \t]*,[ \t]*" + token + r")*[ \t]*,?")
+        for raw_line in response[inventory.end():].split("\n"):
+            line = raw_line.strip().rstrip("\x00\x07\x08\x1a\x7f\ufffd\u25a1\u25ab").rstrip()
+            if not line:
+                if vlan_ids:
+                    break
+                continue
+            if line.startswith(("<", "[")) or not line[0].isdigit():
                 break
-            if re.fullmatch(r"\d{1,4}(?:\s*\([^)]*\))?(?:\s*,\s*\d{1,4}(?:\s*\([^)]*\))?)*", line):
-                vlan_ids.update(int(value) for value in re.findall(r"\d{1,4}", line))
-
-    # Keep compatibility with tabular/detail formats used by other S3900
-    # firmware builds and command output variants.
-    vlan_ids.update(
-        int(match.group(1))
-        for match in re.finditer(r"(?mi)^\s*(\d{1,4})(?:\s*\(|\s+(?:common|static|dynamic|default)\b)", response)
-    )
-    vlan_ids.update(
-        int(match.group(1))
-        for match in re.finditer(r"(?mi)^\s*VLAN\s+ID\s*:\s*(\d{1,4})\b", response)
-    )
-    if not vlan_ids:
+            if not row.fullmatch(line):
+                raise ConfigurationError("Não consegui interpretar toda a lista de VLANs; nenhuma alteração foi enviada.")
+            for item in line.rstrip(",").split(","):
+                match = re.fullmatch(token, item.strip())
+                if not match or not 1 <= int(match.group(1)) <= 4094:
+                    raise ConfigurationError("ID de VLAN inválido no retorno do switch; nenhuma alteração foi enviada.")
+                vlan_ids.add(int(match.group(1)))
+        # Never fall back to the first ID of a malformed comma-separated list.
+    else:
+        vlan_ids.update(
+            int(match.group(1))
+            for match in re.finditer(r"(?mi)^[ \t]*([0-9]{1,4})(?:[ \t]*\(|[ \t]+(?:common|static|dynamic|default)\b)", response)
+        )
+        vlan_ids.update(
+            int(match.group(1))
+            for match in re.finditer(r"(?mi)^[ \t]*VLAN[ \t]+ID[ \t]*:[ \t]*([0-9]{1,4})\b", response)
+        )
+    if not vlan_ids or any(not 1 <= v <= 4094 for v in vlan_ids):
         raise ConfigurationError("Não consegui interpretar a lista atual de VLANs; nenhuma alteração foi enviada.")
     return vlan_ids
+
+
+def _existing_vlans(connection, settings: SerialSettings) -> set[int]:
+    response, _ = _exchange(connection, "display vlan", settings)
+    return _parse_vlan_inventory(response)
 
 
 def _verify_vlan_preconditions(connection, settings: SerialSettings, plan: ConfigurationPlan) -> None:
