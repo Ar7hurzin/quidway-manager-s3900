@@ -60,18 +60,18 @@ class PhysicalDashboardTest(unittest.TestCase):
         responses = deque([
             b"<Quidway>",
             VERSION.encode(), VLAN.encode(),
-            b"Error: Unrecognized command",
-            PORT.encode(), b"Ethernet1/0/2 current state : DOWN\nPVID: 1",
-            b"Ethernet1/0/3 current state : DOWN\nPVID: 1",
-            b"VLAN ID: 1\nTagged Ports: none\nUntagged Ports: none",
-            b"VLAN ID: 11\nDescription: LAB\nTagged Ports: none\nUntagged Ports: none",
-            b"00e0-fc12-3456 12 Learned Ethernet1/0/1 AGING",
+            b"<Quidway>", PORT.encode(),
         ])
         with patch("physical_dashboard.open_connection",return_value=conn), \
              patch("physical_dashboard._read_until_prompt",side_effect=lambda *a: responses.popleft()):
             r=d.collect(settings)
             self.assertEqual(len(r["snapshot"]["ports"]),28)
             self.assertEqual(len(r["snapshot"]["vlans"]),3)
+            self.assertIsNone(r["snapshot"]["ports"][0]["pvid"])
+            self.assertEqual(conn.write.call_count, 3)
+            d.stage = 2
+            d.last_attempt = 0
+            r = d.collect(settings)
             self.assertEqual(r["snapshot"]["ports"][0]["pvid"],12)
             self.assertIsNone(r["snapshot"]["ports"][3]["state"])
             self.assertFalse(r["stale"])
@@ -83,7 +83,23 @@ class PhysicalDashboardTest(unittest.TestCase):
         d.invalidate()
         self.assertTrue(d.cached()["stale"])
         with patch("physical_dashboard.open_connection",side_effect=OSError("cable disconnected")):
-            with self.assertRaises(SerialReadOnlyError):
-                d.collect(settings)
+            result = d.collect(settings)
+            self.assertTrue(result["stale"])
+            self.assertIn("cable disconnected", result["message"])
         self.assertTrue(d.cached()["stale"])
         self.assertEqual(d.cached()["snapshot"]["ports"][0]["pvid"],12)
+
+    def test_optional_timeout_preserves_first_snapshot(self):
+        d = PhysicalDashboard()
+        settings = SerialSettings("/dev/ttyUSB0",9600,60)
+        conn = Mock()
+        conn.__enter__ = Mock(return_value=conn)
+        conn.__exit__ = Mock(return_value=False)
+        with patch("physical_dashboard.open_connection",return_value=conn), \
+             patch("physical_dashboard._read_until_prompt",side_effect=[
+                 b"<Quidway>", VERSION.encode(), SerialReadOnlyError("timeout")]) as read:
+            r = d.collect(settings)
+        self.assertEqual(r["snapshot"]["model"],"Quidway 3900-SI 28-Port")
+        self.assertTrue(r["stale"])
+        self.assertIn("display vlan",r["message"])
+        self.assertTrue(all(call.args[1] <= 6 for call in read.call_args_list))
