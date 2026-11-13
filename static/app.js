@@ -282,8 +282,18 @@ $("port-action").addEventListener("change", updateConfigurationFields);
 $("system-action").addEventListener("change", updateConfigurationFields);
 updateConfigurationFields();
 
-async function previewConfiguration(payload) {
+function showConfigFeedback(message, error = false, source = null) {
+  const box = $("config-feedback");
+  if (source) source.closest("article")?.append(box);
+  box.hidden = false;
+  box.classList.toggle("error", error);
+  box.textContent = message;
+}
+
+async function previewConfiguration(payload, source = null) {
   pendingConfigPreview = null;
+  showConfigFeedback("Gerando prévia…", false, source);
+  updateApplyAvailability();
   $("config-result").textContent = "";
   $("config-preview").hidden = true;
   try {
@@ -301,11 +311,13 @@ async function previewConfiguration(payload) {
     $("preview-commands").textContent = result.commands.join("\n");
     $("config-result").textContent = "";
     $("config-preview").hidden = false;
+    showConfigFeedback("Prévia pronta. Confira os comandos e clique em Aplicar no switch.", false, source);
     $("config-preview").scrollIntoView({ behavior: "smooth", block: "start" });
     updateApplyAvailability();
   } catch (error) {
     $("config-result").classList.add("error");
     $("config-result").textContent = error.message;
+    showConfigFeedback(error.message, true, source);
   }
 }
 
@@ -313,7 +325,7 @@ $("vlan-form").addEventListener("submit", event => {
   event.preventDefault();
   const data = Object.fromEntries(new FormData(event.currentTarget));
   data.vlan_id = Number(data.vlan_id);
-  previewConfiguration(data);
+  previewConfiguration(data, event.currentTarget);
 });
 
 $("port-form").addEventListener("submit", event => {
@@ -331,11 +343,14 @@ $("port-form").addEventListener("submit", event => {
       data.untagged_vlans = data.untagged_vlans ? parseVlanCsv(data.untagged_vlans, "as VLANs untagged") : [];
       data.pvid = Number(data.pvid);
     }
-    previewConfiguration(data);
+    previewConfiguration(data, event.currentTarget);
   } catch (error) {
     $("config-result").classList.add("error");
     $("config-result").textContent = error.message;
     $("config-preview").hidden = true;
+    pendingConfigPreview = null;
+    updateApplyAvailability();
+    showConfigFeedback(error.message, true, event.currentTarget);
   }
 });
 
@@ -346,17 +361,17 @@ $("system-form").addEventListener("submit", event => {
     data.vlan_id = Number(data.vlan_id);
     data.prefix = Number(data.prefix);
   }
-  previewConfiguration(data);
+  previewConfiguration(data, event.currentTarget);
 });
 
 $("route-form").addEventListener("submit", event => {
   event.preventDefault();
   const data = Object.fromEntries(new FormData(event.currentTarget));
   data.prefix = Number(data.prefix);
-  previewConfiguration(data);
+  previewConfiguration(data, event.currentTarget);
 });
 
-$("save-config-button").addEventListener("click", () => previewConfiguration({ action: "save" }));
+$("save-config-button").addEventListener("click", event => previewConfiguration({ action: "save" }, event.currentTarget));
 
 $("backup-button").addEventListener("click", async () => {
   const resultBox = $("config-result");
@@ -419,6 +434,7 @@ $("apply-config-button").addEventListener("click", async () => {
     if (!response.ok || !result.ok) throw new Error(result.error || "O switch não aceitou a operação.");
     pendingConfigPreview = null;
     resultBox.textContent = result.message;
+    showConfigFeedback(result.message);
     const output = document.createElement("pre");
     output.textContent = result.outputs.map(item => `${item.command}\n${item.output}`).join("\n\n");
     resultBox.append(output);
@@ -427,6 +443,7 @@ $("apply-config-button").addEventListener("click", async () => {
   } catch (error) {
     resultBox.classList.add("error");
     resultBox.textContent = error.message;
+    showConfigFeedback(error.message, true);
   } finally {
     applyButton.textContent = "Aplicar no switch";
     updateApplyAvailability();

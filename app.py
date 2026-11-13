@@ -512,6 +512,11 @@ def configuration_preview():
     try:
         payload = request.get_json(silent=True)
         plan = build_plan(payload)
+        if mode() == "virtual":
+            from serial_config import _verify_vlan_preconditions
+            from serial_readonly import open_connection
+            with open_connection(serial_settings()) as connection:
+                _verify_vlan_preconditions(connection, serial_settings(), plan)
         token = issue_preview(plan, owner=session.get("qm_session_id"))
         return jsonify({
             "ok": True, "token": token, "action": plan.action,

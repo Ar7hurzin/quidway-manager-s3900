@@ -69,6 +69,15 @@ class VirtualTest(unittest.TestCase):
         with c.session_transaction() as sess: headers={"X-CSRF-Token":sess["csrf_token"]}
         self.assertEqual(c.get("/api/status").json["mode"],"virtual")
         self.assertTrue(c.get("/api/config/status").json["writes_enabled"])
+        missing=c.post("/api/config/preview",json={"action":"set_management_ip","vlan_id":2,"ip":"192.168.100.1","prefix":24},headers=headers)
+        self.assertEqual(missing.status_code,400)
+        self.assertIn("2",missing.json["error"])
+        valid=c.post("/api/config/preview",json={"action":"set_management_ip","vlan_id":1,"ip":"192.168.100.1","prefix":24},headers=headers)
+        self.assertEqual(valid.status_code,200)
+        applied=c.post("/api/config/apply",json={"token":valid.json["token"]},headers=headers)
+        self.assertEqual(applied.status_code,200)
+        self.assertEqual(applied.json["snapshot"]["ips"]["1"]["ip"],"192.168.100.1")
+
         preview=c.post("/api/config/preview",json={"action":"create_vlan","vlan_id":42,"name":"TEST"},headers=headers)
         self.assertEqual(preview.status_code,200)
         result=c.post("/api/config/apply",json={"token":preview.json["token"]},headers=headers)
