@@ -73,7 +73,7 @@
         <article id="vlans" class="card panel-card">
           <div class="panel-head"><div><div class="card-overline">SEGMENTAÇÃO</div><h2>VLANs</h2></div><span class="subtle-tag">Leitura somente</span></div>
           <p class="panel-note">A associação de portas depende do formato que o firmware retornar.</p>
-          <div class="table-wrap"><table><thead><tr><th>ID</th><th>Nome</th><th>Portas</th><th>Origem</th></tr></thead><tbody id="vlan-body"><tr><td colspan="4" class="table-empty">Aguardando leitura.</td></tr></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>ID</th><th>Descrição</th><th>Portas</th><th>Origem</th></tr></thead><tbody id="vlan-body"><tr><td colspan="4" class="table-empty">Aguardando leitura.</td></tr></tbody></table></div>
           <div class="callout">VLAN de camada 2 não significa, por si só, que exista roteamento entre redes.</div>
         </article>
       </section>
@@ -109,11 +109,11 @@
           </article>
 
           <article id="vlan-config-card" class="card panel-card">
-            <div class="panel-head"><div><div class="card-overline">SEGMENTAÇÃO</div><h2>VLANs</h2></div><span class="subtle-tag">Criar, nomear, excluir</span></div>
+            <div class="panel-head"><div><div class="card-overline">SEGMENTAÇÃO</div><h2>VLANs</h2></div><span class="subtle-tag">Criar, descrever, excluir</span></div>
             <form id="vlan-form" class="config-form">
-              <label>Ação<select name="action" id="vlan-action"><option value="create_vlan">Criar VLAN</option><option value="rename_vlan">Alterar nome</option><option value="delete_vlan">Excluir VLAN</option></select></label>
+              <label>Ação<select name="action" id="vlan-action"><option value="create_vlan">Criar VLAN</option><option value="rename_vlan">Alterar descrição</option><option value="delete_vlan">Excluir VLAN</option></select></label>
               <label>ID da VLAN<input name="vlan_id" type="number" min="1" max="4094" value="10" required></label>
-              <label class="vlan-name-field">Nome<input name="name" maxlength="31" placeholder="USUARIOS"></label>
+              <label class="vlan-name-field">Descrição<input name="name" maxlength="31" placeholder="USUARIOS"></label>
               <button class="button button-secondary" type="submit">Pré-visualizar VLAN</button>
             </form>
             <p class="panel-note">A VLAN 1 padrão é protegida. Excluir outra VLAN pode interromper as portas e serviços associados.</p>
@@ -199,6 +199,6 @@
       <footer class="footer"><span>Quidway Manager · configuração com prévia</span><span>Console local · acesso remoto privado via tailnet</span></footer>
     </main>
   </div>
-  <script src="/static/app.js?v=20261113-virtual-2" defer></script>
+  <script src="/static/app.js?v=20261113-vlan-3" defer></script>
 </body>
 </html>
