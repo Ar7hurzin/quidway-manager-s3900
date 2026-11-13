@@ -136,13 +136,29 @@ class PhysicalDashboard:
         self.vlan_cursor = 0
         self.brief_supported = None
         self.mac_attempt = 0.0
+        self.priority_ports = set()
+        self.priority_vlans = set()
         self.settings_key = None
         self.dirty = True
         self.error = None
 
-    def invalidate(self):
+    def invalidate(self, plan=None):
         self.dirty = True
         self.last_attempt = 0.0
+        self.mac_attempt = 0.0
+        if plan is None:
+            self.port_cursor = 0
+            self.vlan_cursor = 0
+            return
+        for command in plan.commands:
+            for n in range(1, 29):
+                if command.lower() == ("interface " + interface_name(n)).lower():
+                    self.priority_ports.add(n)
+                    break
+            if re.fullmatch(r"(?:undo )?vlan [0-9]+|interface Vlan-interface [0-9]+|port (?:access vlan|trunk pvid vlan|hybrid pvid vlan) [0-9]+", command):
+                vlan = int(command.rsplit(" ", 1)[1])
+                if 1 <= vlan <= 4094:
+                    self.priority_vlans.add(vlan)
 
     def cached(self):
         return {"snapshot": copy.deepcopy(self.data), "outputs": copy.deepcopy(self.outputs),
@@ -194,9 +210,13 @@ class PhysicalDashboard:
                     self.brief_supported = bool(states)
                     for number, fields in states.items():
                         data["ports"][number-1].update(fields)
-                for _ in range(PORT_BATCH):
+                selected_ports = sorted(self.priority_ports)[:PORT_BATCH]
+                while len(selected_ports) < PORT_BATCH:
                     n = self.port_cursor % 28 + 1
                     self.port_cursor += 1
+                    if n not in selected_ports:
+                        selected_ports.append(n)
+                for n in selected_ports:
                     output = query(connection, "display interface " + interface_name(n))
                     port = parse_port(output or "", n)
                     if port:
@@ -210,9 +230,14 @@ class PhysicalDashboard:
                     else:
                         notes.append(f"Porta {n}: resposta sem dados reconhecidos.")
                 vlans = data["vlans"] or []
-                for _ in range(min(VLAN_BATCH, len(vlans))):
+                vlan_indices = {row["id"]: idx for idx,row in enumerate(vlans)}
+                selected_vlans = [vlan_indices[v] for v in sorted(self.priority_vlans) if v in vlan_indices][:VLAN_BATCH]
+                while len(selected_vlans) < min(VLAN_BATCH, len(vlans)):
                     idx = self.vlan_cursor % len(vlans)
                     self.vlan_cursor += 1
+                    if idx not in selected_vlans:
+                        selected_vlans.append(idx)
+                for idx in selected_vlans:
                     v = vlans[idx]["id"]
                     detail = parse_vlan_detail(query(connection, f"display vlan {v}") or "", v)
                     if detail:
@@ -226,6 +251,8 @@ class PhysicalDashboard:
                         notes.append("Tabela MAC indisponível nesta coleta.")
             data.update(collected_at=now(), port=settings.port, baud_rate=settings.baud_rate,
                         notes=notes, expected_ports=28)
+            self.priority_ports.difference_update(selected_ports)
+            self.priority_vlans.difference_update(vlans[i]["id"] for i in selected_vlans)
             self.data = data
             self.outputs = outputs
             self.dirty = False
