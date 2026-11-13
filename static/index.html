@@ -7,7 +7,7 @@
   <meta name="csrf-token" content="{{ csrf_token }}">
   <title>Quidway Manager</title>
   <script>document.documentElement.dataset.page = location.pathname === "/configuracao" ? "configuration" : location.pathname === "/monitoramento" ? "monitoring" : location.pathname === "/sistema" ? "system" : location.pathname === "/cli" ? "cli" : "dashboard";</script>
-  <link rel="stylesheet" href="/static/styles.css?v=20261113-physical-4">
+  <link rel="stylesheet" href="/static/styles.css?v=20261113-physical-5">
 </head>
 <body>
   <div class="frame">
@@ -46,7 +46,7 @@
           <article class="card panel-card connection-panel">
             <div class="panel-head"><div><div class="card-overline">PORTAS DO SWITCH</div><h2>Dispositivos conectados</h2></div><span class="connection-counter pending" id="switch-device-count">—</span></div>
             <p id="switch-connections-note" class="panel-note">Ainda não há coleta de endereços MAC por porta validada para este firmware.</p>
-            <div class="device-connection-placeholder"><strong>Dados do switch aguardam validação</strong><span>Após validar as consultas, esta área poderá mostrar dispositivo (MAC), VLAN e porta. Um endereço MAC identifica um dispositivo, não necessariamente uma pessoa; sessões administrativas abertas diretamente no switch exigem outra consulta.</span></div>
+            <div id="physical-mac-list" class="physical-only"></div><div id="switch-device-placeholder" class="device-connection-placeholder"><strong>Dados do switch aguardam validação</strong><span>Após validar as consultas, esta área poderá mostrar dispositivo (MAC), VLAN e porta. Um endereço MAC identifica um dispositivo, não necessariamente uma pessoa; sessões administrativas abertas diretamente no switch exigem outra consulta.</span></div>
           </article>
         </div>
       </section>
@@ -84,7 +84,7 @@
         <article id="monitoring" class="card panel-card">
           <div class="panel-head"><div><div class="card-overline">TRÁFEGO</div><h2>Monitoramento</h2></div><span class="subtle-tag">Sem amostras</span></div>
           <p class="panel-note">Gráficos serão habilitados depois de confirmar contadores e um intervalo de coleta seguro.</p>
-          <div class="chart-placeholder"><div class="chart-grid"></div><div class="chart-empty"><span class="chart-glyph">⌁</span><strong>Sem dados históricos</strong><small>Esta interface não inventa métricas no modo real.</small></div></div>
+          <div id="physical-traffic" class="physical-only"></div><div id="traffic-placeholder" class="chart-placeholder"><div class="chart-grid"></div><div class="chart-empty"><span class="chart-glyph">⌁</span><strong>Sem dados históricos</strong><small>Esta interface não inventa métricas no modo real.</small></div></div>
         </article>
         <article id="diagnostics" class="card panel-card diagnostics-card">
           <div class="panel-head"><div><div class="card-overline">CONEXÃO</div><h2>Diagnóstico do switch</h2></div><span id="transport-badge" class="ssh-badge">SSH</span></div>
@@ -201,6 +201,6 @@
       <footer class="footer"><span>Quidway Manager · configuração com prévia</span><span>Console local · acesso remoto privado via tailnet</span></footer>
     </main>
   </div>
-  <script src="/static/app.js?v=20261113-physical-4" defer></script>
+  <script src="/static/app.js?v=20261113-physical-5" defer></script>
 </body>
 </html>
