@@ -64,12 +64,13 @@ def main():
         print('A porta já está ocupada por outro serviço ou por um Manager antigo. Encerre-o antes de iniciar.', file=sys.stderr); return 2
     except (URLError, OSError, ValueError, AttributeError):
         pass
-    from app import app, _auth_configured
+    from app import app, _auth_configured, start_live_monitor
     if not _auth_configured():
         print('Credenciais locais inválidas. Execute python start.py configure.', file=sys.stderr); return 2
     from waitress import serve
     host = '0.0.0.0' if os.getenv('QM_CONTAINER') == '1' else '127.0.0.1'
     print('Quidway Manager: '+url+' | modo: '+os.environ['QM_MODE'], flush=True)
+    start_live_monitor()
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     try:
         serve(app, host=host, port=port, threads=8)

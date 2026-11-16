@@ -27,6 +27,7 @@ from ssh_readonly import SwitchSettings, SSHReadOnlyError, collect_diagnostics
 from switch_config import ConfigurationError, build_plan, consume_preview, issue_preview
 from virtual_switch import snapshot as virtual_snapshot
 from physical_dashboard import PhysicalDashboard
+from live_monitor import LiveMonitor
 
 physical_dashboard = PhysicalDashboard()
 
@@ -216,6 +217,21 @@ def serial_settings() -> SerialSettings:
     if mode() == "virtual":
         return SerialSettings("S3900-Virtual", 9600, 3, virtual=True)
     return SerialSettings.from_environment()
+
+
+physical_monitor = LiveMonitor(
+    collect=lambda: physical_dashboard.collect(serial_settings()),
+    cli_busy=lambda: cli_session.connected,
+    serial_lock=_serial_request_lock,
+    interval=4,
+    retry_interval=12,
+)
+atexit.register(physical_monitor.stop)
+
+
+def start_live_monitor():
+    if mode() == "serial":
+        physical_monitor.start()
 
 
 def config_writes_enabled() -> bool:
@@ -462,7 +478,7 @@ def dashboard_cache():
     if mode() != "serial":
         return jsonify({"error": "Cache disponível somente no modo serial físico."}), 409
     result = physical_dashboard.cached()
-    return jsonify({"mode": "serial", "ok": True, "cli_busy": cli_session.connected, **result})
+    return jsonify({"mode": "serial", "ok": True, "cli_busy": cli_session.connected, "monitor": physical_monitor.status(), **result})
 
 
 @app.get("/api/health")
@@ -585,6 +601,7 @@ def configuration_backup():
 
 
 if __name__ == "__main__":
+    start_live_monitor()
     # Native is loopback-only. Container publishes host loopback via Compose.
     port = int(os.getenv("QM_WEB_PORT", "8787"))
     host = "0.0.0.0" if os.getenv("QM_CONTAINER") == "1" else "127.0.0.1"

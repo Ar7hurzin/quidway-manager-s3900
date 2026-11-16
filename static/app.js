@@ -32,6 +32,7 @@ function setMode(status) {
   const isVirtual = status.mode === "virtual";
   const isSerial = status.mode === "serial";
   const isLive = status.mode === "real" || isSerial || isVirtual;
+  if ($("live-status")) $("live-status").style.display = isSerial ? "" : "none";
   const pill = $("mode-pill");
   const banner = $("mode-banner");
   pill.textContent = isVirtual ? "SIMULAÇÃO · S3900 VIRTUAL" : status.mode === "real" ? "MODO REAL · SSH" : isSerial ? "MODO REAL · CONSOLE" : "DEMONSTRAÇÃO";
@@ -39,7 +40,7 @@ function setMode(status) {
   banner.classList.toggle("real", isLive);
   banner.innerHTML = `<span class="banner-icon">${isLive ? "✓" : "!"}</span><span>${escapeHtml(status.message)}</span>`;
   $("ssh-message").textContent = isLive
-    ? (status.ready ? (isSerial ? "Console serial configurado. Ao atualizar, o Manager envia consultas fixas somente de leitura." : "Conector SSH configurado. A interface envia somente os comandos fixos de consulta.") : status.message)
+    ? (status.ready ? (isSerial ? "Console serial configurado. A coleta de leitura ocorre automaticamente, sem clicar em Atualizar." : "Conector SSH configurado. A interface envia somente os comandos fixos de consulta.") : status.message)
     : "Modo de demonstração: nenhuma sessão é aberta e nenhum dado vem do switch.";
   $("transport-badge").textContent = isVirtual ? "VIRTUAL" : isSerial ? "CONSOLE" : "SSH";
   $("refresh").disabled = isLive && !status.ready;
@@ -78,8 +79,8 @@ function setMode(status) {
     $("connection-state").classList.remove("online");
     $("connection-state").querySelector("span").textContent = "Sem conexão";
     if (isSerial) {
-      if (["dashboard","monitoring","system"].includes(pageKind)) refreshPhysical(true);
-      else loadPhysicalCache();
+      $("refresh").style.display = "none";
+      beginPhysicalPolling();
     }
   }
   loadConfigurationStatus();
@@ -106,7 +107,7 @@ function renderDemo() {
 function renderPhysical(data, stale = false) {
   if (!data) return;
   const text = (id, value) => { $(id).textContent = value ?? "—"; };
-  const ports = data.ports || [];
+  const ports = [...(data.ports || [])].sort((a,b) => a.number - b.number);
   const known = ports.filter(p => p.state === "up" || p.state === "down");
   text("device-name", data.name);
   text("device-model", data.version);
@@ -121,8 +122,13 @@ function renderPhysical(data, stale = false) {
   text("physical-collection-note", (stale ? "Última leitura disponível. " : "Leitura real. ") + "Estados e detalhes têm horários próprios; dados não reconhecidos aparecem como —. " + (data.notes || []).join(" "));
   $("ports-note").textContent = "Portas físicas: " + known.length + " de " + ports.length + " links identificados. Selecione uma porta para ver os detalhes e o horário da leitura.";
   $("port-grid").innerHTML = ports.map(p => '<button type="button" class="port ' + (p.state === "down" ? "down" : p.state === "up" ? "" : "unknown") + '" data-real-port="' + p.number + '" title="' + escapeHtml(p.interface + " · " + (p.mode || "—") + " · PVID " + (p.pvid ?? "—")) + '"><span class="port-num">' + String(p.number).padStart(2,"0") + '</span><span class="port-state">' + (p.state || "—").toUpperCase() + '</span></button>').join("");
-  const rows = data.vlans;
-  $("vlan-body").innerHTML = rows === null ? '<tr><td colspan="4" class="table-empty">Lista não reconhecida; consulte Diagnóstico.</td></tr>' : rows.map(v => "<tr>" + [v.id,v.name ?? "—",v.members ?? "—",v.collected_at ? "Console · " + new Date(v.collected_at).toLocaleTimeString("pt-BR") : "Inventário"].map(x=>"<td>"+escapeHtml(x)+"</td>").join("") + "</tr>").join("");
+  const rows = data.vlans?.slice().sort((a,b) => a.id - b.id) ?? null;
+  const vlanPortNumbers = vlan => {
+    const confirmed = [...(vlan.tagged_numbers || []), ...(vlan.untagged_numbers || []), ...(vlan.membership_from_ports || [])];
+    const numbers = [...new Set(confirmed.map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= 28))].sort((a,b) => a-b);
+    return numbers.length ? numbers.join(", ") : "—";
+  };
+  $("vlan-body").innerHTML = rows === null ? '<tr><td colspan="4" class="table-empty">Lista não reconhecida; consulte Diagnóstico.</td></tr>' : rows.map(v => "<tr>" + [v.id,v.name ?? "—",vlanPortNumbers(v),v.collected_at ? "Console · " + new Date(v.collected_at).toLocaleTimeString("pt-BR") : "Inventário"].map(x=>"<td>"+escapeHtml(x)+"</td>").join("") + "</tr>").join("");
   const selected = Number($("physical-port-detail").dataset.port || 1);
   function detail(number) {
     const p = ports.find(p => p.number === number);
@@ -139,7 +145,7 @@ function renderPhysical(data, stale = false) {
   $("switch-connections-note").textContent = macs
     ? "MACs aprendidos identificados · " + new Date(macs.collected_at).toLocaleTimeString("pt-BR") + ". Não é uma contagem de pessoas nem prova de link ativo."
     : "Tabela MAC ainda indisponível ou não reconhecida neste firmware.";
-  macList.innerHTML = macs ? (macs.entries.length ? '<div class="table-wrap"><table><thead><tr><th>MAC</th><th>VLAN</th><th>Porta</th></tr></thead><tbody>' + macs.entries.slice(0,100).map(r => "<tr>" + [r.mac,r.vlan,r.port].map(v=>"<td>"+escapeHtml(v)+"</td>").join("") + "</tr>").join("") + '</tbody></table></div>' : '<div class="empty-inline">Nenhum MAC aprendido na leitura.</div>') : "";
+  macList.innerHTML = macs ? (macs.entries.length ? '<div class="table-wrap"><table><thead><tr><th>MAC</th><th>VLAN</th><th>Porta</th></tr></thead><tbody>' + [...macs.entries].sort((a,b) => a.port-b.port || a.vlan-b.vlan || a.mac.localeCompare(b.mac)).slice(0,100).map(r => "<tr>" + [r.mac,r.vlan,r.port].map(v=>"<td>"+escapeHtml(v)+"</td>").join("") + "</tr>").join("") + '</tbody></table></div>' : '<div class="empty-inline">Nenhum MAC aprendido na leitura.</div>') : "";
   if (macs && macs.entries.length > 100) macList.insertAdjacentHTML("beforeend", '<p class="panel-note">Exibindo as primeiras 100 entradas reconhecidas.</p>');
   const traffic = ports.filter(p => p.rx_bps != null || p.tx_bps != null);
   $("traffic-placeholder").hidden = traffic.length > 0;
@@ -154,72 +160,80 @@ function renderPhysical(data, stale = false) {
   $("system-page").querySelector(".subtle-tag").textContent = stale ? "Leitura anterior" : "Leitura real";
 }
 
-function schedulePhysicalRefresh() {
-  if (appStatus.mode !== "serial" || !["dashboard","monitoring","system"].includes(pageKind)) return;
-  window.clearTimeout(physicalTimer);
-  physicalTimer = window.setTimeout(() => {
-    if (document.hidden) schedulePhysicalRefresh();
-    else refreshPhysical(true);
-  }, 12000);
-}
+let physicalCacheBusy = false;
+let lastPhysicalRenderKey = "";
+let lastPhysicalOutputKey = "";
 
 async function loadPhysicalCache() {
+  if (appStatus.mode !== "serial" || physicalCacheBusy) return;
+  physicalCacheBusy = true;
   try {
-    const response = await fetch("/api/dashboard", {cache:"no-store", signal: AbortSignal.timeout(5000)});
-    if (response.status === 404) {
-      $("physical-collection-note").textContent = "Servidor Python desatualizado: encerre a instância antiga e reinicie com start.py.";
-      return { incompatible: true };
-    }
-    if (!response.ok) throw new Error("API de dashboard indisponível (" + response.status + ")");
+    const response = await fetch("/api/dashboard", {
+      cache: "no-store", signal: AbortSignal.timeout(5000)
+    });
+    if (!response.ok) throw new Error("API de monitoramento indisponível (" + response.status + ")");
     const result = await response.json();
-    if (result.snapshot) renderPhysical(result.snapshot, result.stale || result.cli_busy);
-    if (result.outputs?.length) showOutputs(result.outputs);
-    if (result.cli_busy) $("physical-collection-note").textContent = "Atualização pausada: terminal CLI aberto. Encerre a sessão para retomar.";
-    return result;
+    const monitor = result.monitor || {state: "iniciando", message: "Aguardando o monitoramento em segundo plano."};
+    const state = monitor.state;
+    const stale = result.stale || result.cli_busy || ["erro", "desatualizado", "pausado"].includes(state);
+    const status = $("live-status");
+    if (status) {
+      const labels = {
+        ativo: "● Monitoramento ativo", consultando: "◌ Lendo o switch",
+        pausado: "Ⅱ CLI aberta · pausado", erro: "! Sem leitura recente",
+        desatualizado: "! Dados anteriores", aguardando: "◌ Aguardando console",
+        iniciando: "◌ Iniciando monitoramento"
+      };
+      status.textContent = labels[state] || "◌ Aguardando console";
+      status.title = monitor.message || "";
+    }
+    if (result.snapshot) {
+      const key = result.snapshot.collected_at + "|" + stale;
+      if (key !== lastPhysicalRenderKey) {
+        renderPhysical(result.snapshot, stale);
+        lastPhysicalRenderKey = key;
+      }
+    }
+    if (result.outputs?.length) {
+      const key = result.outputs.map(o => o.command + o.output.length).join("|");
+      if (key !== lastPhysicalOutputKey) {
+        showOutputs(result.outputs);
+        lastPhysicalOutputKey = key;
+      }
+    }
+    const last = result.snapshot?.collected_at
+      ? " Última leitura: " + new Date(result.snapshot.collected_at).toLocaleTimeString("pt-BR") + "."
+      : "";
+    const notes = (result.snapshot?.notes || []).slice(0, 2).join(" ");
+    $("physical-collection-note").textContent =
+      (monitor.message || "Monitoramento aguardando.") + last +
+      " Console de 9600 baud: medições não são instantâneas; taxas podem representar médias de 300 segundos. " + notes;
+    if (result.cli_busy) {
+      $("physical-collection-note").textContent = "Monitoramento pausado: encerre a sessão CLI para liberar a porta serial." + last;
+    }
   } catch (error) {
-    $("physical-collection-note").textContent = "Falha ao consultar dashboard: " + error.message;
-    return null;
+    $("physical-collection-note").textContent = "Monitoramento sem acesso ao servidor: " + error.message + ". Últimos dados preservados.";
+    const status = $("live-status");
+    if (status) status.textContent = "! Conexão com servidor indisponível";
+  } finally {
+    physicalCacheBusy = false;
   }
 }
 
-async function refreshPhysical(automatic = false) {
-  if (appStatus.mode !== "serial" || physicalRefreshBusy) return;
-  physicalRefreshBusy = true;
-  const button = $("refresh");
-  window.clearTimeout(physicalTimer);
-  button.disabled = true;
-  button.innerHTML = automatic ? "<span>◌</span> Leitura automática" : "<span>◌</span> Consultando...";
-  try {
-    const cache = await loadPhysicalCache();
-    if (cache?.cli_busy || cache?.incompatible) return;
-    $("physical-collection-note").textContent = "Consultando o switch físico. Aguarde a leitura do console...";
-    const response = await fetch("/api/refresh", {method:"POST", headers:{"Content-Type":"application/json","Accept":"application/json"}, body: JSON.stringify({automatic}), signal: AbortSignal.timeout(25000)});
-    const result = await response.json();
-    if (!response.ok || !result.ok) {
-      $("physical-collection-note").textContent = result.message || result.error || "Falha na coleta.";
-      if (cache?.snapshot) {
-        $("connection-state").classList.remove("online");
-        $("connection-state").querySelector("span").textContent = "Dados anteriores";
-        $("last-read-note").textContent = "Última leitura · desatualizada";
-      }
-      return;
-    }
-    if (!result.snapshot) {
-      $("physical-collection-note").textContent = "O servidor não retornou o estado do dashboard. Reinicie a instância Python após atualizar o projeto.";
-      return;
-    }
-    renderPhysical(result.snapshot, result.stale);
-    showOutputs(result.outputs);
-    $("ssh-message").textContent = result.message;
-    if (result.stale) $("physical-collection-note").textContent = result.message || "Leitura parcial; próxima coleta em instantes.";
-  } catch (error) {
-    $("physical-collection-note").textContent = error.name === "TimeoutError" || error.name === "AbortError" ? "A consulta atingiu o limite de espera. Última leitura preservada; nova tentativa em 12 segundos." : "Não foi possível atualizar: " + error.message;
-  } finally {
-    physicalRefreshBusy = false;
-    schedulePhysicalRefresh();
-    button.disabled = !appStatus.ready;
-    button.innerHTML = "<span>↻</span> Atualizar leitura";
-  }
+function beginPhysicalPolling() {
+  if (physicalTimer) window.clearTimeout(physicalTimer);
+  const tick = async () => {
+    if (appStatus.mode !== "serial") return;
+    await loadPhysicalCache();
+    physicalTimer = window.setTimeout(tick, document.hidden ? 8000 : 2500);
+  };
+  tick();
+}
+
+// Remains for existing call sites after guided configuration.
+// It reads the cache only; serial collection belongs to the background worker.
+async function refreshPhysical() {
+  return loadPhysicalCache();
 }
 
 function renderVirtual(data) {

@@ -122,3 +122,59 @@ html[data-mode="serial"] .port.unknown{background:#fff7e5;border-color:#d9bb7d;c
 html[data-mode="serial"] .port.unknown .port-state{color:#805400}
 .port-detail{white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;background:#f2f5f8;border:1px solid #cbd6e1;border-radius:6px}
 @media(max-width:900px){html[data-mode="serial"][data-page="dashboard"] .switching-row{grid-template-columns:1fr}}
+
+/* Management-console theme inspired by the supplied iDRAC reference. */
+:root{--bg:#eef0f2;--panel:#fafbfc;--panel-2:#f3f4f5;--border:#d4d8dc;--text:#303b45;--muted:#596773;--blue:#0079a8;--teal:#0079a8}
+body{background:var(--bg);color:var(--text)}
+.sidebar{height:100px;display:grid;grid-template-columns:1fr auto;grid-template-rows:54px 46px;gap:0;padding:0;background:linear-gradient(to bottom,#0079a8 0,#0079a8 54px,#f3f4f5 54px,#f3f4f5 100%);border-bottom:1px solid #cdd2d7;box-shadow:none}
+.sidebar .brand{padding:0 clamp(16px,3vw,42px);color:#fff;gap:10px;align-self:center}
+.sidebar .brand-mark{width:32px;height:32px;background:transparent;border:1px solid #ffffffa6;color:#fff;border-radius:3px;box-shadow:none}
+.sidebar .brand strong{font-size:16px;font-weight:500}
+.sidebar .brand small{color:#e1f0f6;letter-spacing:1.1px}
+.header-device-tag{grid-column:2;grid-row:1;color:#fff;border:0;padding:0 clamp(16px,3vw,42px)}
+.header-device-tag .pulse{background:#c3edda;box-shadow:none}
+.main-nav{grid-column:1/-1;grid-row:2;height:46px;align-items:stretch;gap:0;padding:0 clamp(16px,3vw,42px)}
+.nav-item{height:46px;border-radius:0;padding:0 18px;color:#006d98;font-weight:600;transition:background-color .15s ease,color .15s ease}
+.nav-item span{color:inherit}
+.nav-item.active,.nav-item.active:hover{background:#0079a8;color:#fff;box-shadow:none}
+.nav-item.active span{color:#fff}
+.nav-item.active:after{display:none}
+.nav-item:not(.active):hover{background:#e0e9ed;color:#005675}
+.main{padding-top:23px}
+.topbar h1{font-weight:500;color:#303b45;letter-spacing:-.4px}
+.eyebrow,.card-overline{color:#5c6975}
+.card{background:var(--panel);border-color:var(--border);border-radius:12px;box-shadow:none}
+.panel-card{padding:20px}
+.device-card,.mini-card{padding:18px}
+.device-icon{background:#e9f1f5;color:#00749f;border-radius:4px}
+.panel-head h2{font-weight:600;color:#35424d}
+.panel-note{color:var(--muted);font-size:12px;line-height:1.65}
+.mode-banner,.config-banner{border-radius:4px}
+.button{border-radius:3px;transition:background-color .15s ease;box-shadow:none}
+.button-primary{background:#0079a8;color:#fff;box-shadow:none}
+.button-primary:hover{background:#00658c;color:#fff}
+.button-secondary{background:#f9fafb;border-color:#b9c5cd;color:#006d98}
+.button-secondary:hover{background:#e8eff3}
+.table-wrap{border-color:var(--border);border-radius:3px}
+th{background:#eef1f3;color:#475560;padding-top:11px;padding-bottom:11px}
+td{border-color:#dce0e4;color:#35424d}
+tbody tr:last-child td{border-bottom:0}
+.subtle-tag,.ssh-badge{background:#edf1f4;border-color:#d4dce2;border-radius:3px}
+.empty-inline,.device-connection-placeholder{background:#f3f5f6;border-color:#d5dce1;border-radius:4px}
+.manager-session-row,.coverage-grid>div,.port-detail{background:#f1f3f5;border-color:#d5dce1;border-radius:4px}
+.config-form input,.config-form select,.config-confirm-row input,.cli-input-row textarea{background:#fff;border-color:#bfc8d0;border-radius:3px}
+.cli-output,.output-block,.command-preview{background:#f1f3f5;border-color:#d4d8dc;border-radius:4px}
+section[id],article[id]{scroll-margin-top:116px}
+#backup-card{scroll-margin-top:116px}
+@media(max-width:900px){.nav-item{padding:0 14px}}
+@media(max-width:720px){.sidebar{height:92px;grid-template-rows:48px 44px;background:linear-gradient(to bottom,#0079a8 0,#0079a8 48px,#f3f4f5 48px,#f3f4f5 100%)}.sidebar .brand{padding:0 12px}.sidebar .brand strong{font-size:14px}.main-nav{height:44px;padding:0 6px}.nav-item{height:44px;padding:0 12px;font-size:12px}.panel-card{padding:16px}.device-card,.mini-card{padding:14px}}
+@media(max-width:480px){.nav-item{padding:0 10px;font-size:11px}}
+@media(prefers-reduced-motion:reduce){.nav-item,.button{transition:none}}
+
+/* Rounded navigation tabs within the neutral menu bar. */
+.main-nav{align-items:center;gap:5px}
+.nav-item{height:36px;border-radius:8px}
+@media(max-width:720px){.main-nav{gap:3px}.nav-item{height:34px}}
+
+.sidebar a.brand{text-decoration:none}
+.sidebar a.brand:hover strong{text-decoration:none}
