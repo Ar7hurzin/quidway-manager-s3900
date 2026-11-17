@@ -21,13 +21,15 @@ from flask import Flask, jsonify, redirect, render_template_string, request, sen
 from waitress import serve
 
 from serial_readonly import SerialSettings, SerialReadOnlyError, collect_serial_diagnostics
-from serial_config import execute_plan, export_current_configuration
+from serial_config import execute_plan, export_current_configuration, prepare_plan
 from serial_cli import SerialCLIError, cli_session
 from ssh_readonly import SwitchSettings, SSHReadOnlyError, collect_diagnostics
 from switch_config import ConfigurationError, build_plan, consume_preview, issue_preview
 from virtual_switch import snapshot as virtual_snapshot
 from physical_dashboard import PhysicalDashboard
 from live_monitor import LiveMonitor
+from lab_capture import record_lab_reading
+from session_registry import SessionRegistry
 
 physical_dashboard = PhysicalDashboard()
 
@@ -49,6 +51,7 @@ AUTH_USERNAME = os.getenv("QM_AUTH_USERNAME", "").strip()
 AUTH_PASSWORD_HASH = os.getenv("QM_AUTH_PASSWORD_HASH", "").strip()
 ACTIVE_SESSION_TTL_SECONDS = 5 * 60
 SESSION_MAX_AGE_SECONDS = 8 * 60 * 60
+_session_registry = SessionRegistry()
 _active_sessions: dict[str, tuple[str, float]] = {}
 _active_sessions_lock = threading.Lock()
 _serial_request_lock = threading.Lock()
@@ -121,6 +124,23 @@ def _safe_token_equal(supplied: object, expected: object) -> bool:
             and supplied.isascii() and expected.isascii() and hmac.compare_digest(supplied, expected))
 
 
+def _credential_version() -> str:
+    return hashlib.sha256((AUTH_USERNAME + "\0" + AUTH_PASSWORD_HASH).encode()).hexdigest()
+
+
+def _invalidate_browser_session() -> None:
+    session_id = session.get("qm_session_id")
+    _session_registry.revoke(session_id)
+    cli_session.request_close_owner(session_id)
+    token = session.get("qm_cli_token")
+    if token:
+        cli_session.request_close(token)
+    if isinstance(session_id, str):
+        with _active_sessions_lock:
+            _active_sessions.pop(session_id, None)
+    session.clear()
+
+
 def _touch_active_session() -> None:
     session_id = session.get("qm_session_id")
     username = session.get("qm_user")
@@ -141,6 +161,17 @@ def require_login_and_csrf():
     if not _auth_configured():
         return SETUP_REQUIRED_PAGE, 503
 
+    if session.get("qm_user") is not None:
+        logged_in_at = session.get("qm_login_time")
+        now = time.time()
+        valid = (session.get("qm_user") == AUTH_USERNAME
+                 and isinstance(logged_in_at, (int, float))
+                 and 0 <= now - logged_in_at < SESSION_MAX_AGE_SECONDS
+                 and _session_registry.valid(session.get("qm_session_id"), AUTH_USERNAME,
+                                             _credential_version()))
+        if not valid:
+            _invalidate_browser_session()
+
     if request.path == "/login":
         if request.method == "POST":
             supplied = request.form.get("csrf_token", "")
@@ -149,14 +180,6 @@ def require_login_and_csrf():
                 return "Token de formulário inválido. Atualize a página e tente novamente.", 400
         return None
 
-    if session.get("qm_user") == AUTH_USERNAME:
-        logged_in_at = session.get("qm_login_time")
-        if not isinstance(logged_in_at, (int, float)) or time.time() - logged_in_at > SESSION_MAX_AGE_SECONDS:
-            session_id = session.get("qm_session_id")
-            if isinstance(session_id, str):
-                with _active_sessions_lock:
-                    _active_sessions.pop(session_id, None)
-            session.clear()
     if session.get("qm_user") != AUTH_USERNAME:
         if request.path.startswith("/api/"):
             return jsonify({"ok": False, "error": "Sessão encerrada. Entre novamente."}), 401
@@ -219,8 +242,14 @@ def serial_settings() -> SerialSettings:
     return SerialSettings.from_environment()
 
 
+def collect_for_lab():
+    reading = physical_dashboard.collect(serial_settings())
+    record_lab_reading(reading)
+    return reading
+
+
 physical_monitor = LiveMonitor(
-    collect=lambda: physical_dashboard.collect(serial_settings()),
+    collect=collect_for_lab,
     cli_busy=lambda: cli_session.connected,
     serial_lock=_serial_request_lock,
     interval=4,
@@ -281,10 +310,14 @@ def login():
         if username_matches and password_matches:
             with _login_lock:
                 _login_attempts.pop(request.remote_addr or "local", None)
-            session.clear()
+            try:
+                session_id = _session_registry.issue(AUTH_USERNAME, _credential_version(), SESSION_MAX_AGE_SECONDS)
+            except ValueError as exc:
+                return render_template_string(LOGIN_PAGE, csrf_token=csrf_token, error=str(exc)), 503
+            _invalidate_browser_session()
             session.permanent = True
             session["qm_user"] = AUTH_USERNAME
-            session["qm_session_id"] = secrets.token_urlsafe(24)
+            session["qm_session_id"] = session_id
             session["qm_login_time"] = time.time()
             session["csrf_token"] = secrets.token_urlsafe(32)
             return redirect(url_for("index"))
@@ -294,11 +327,7 @@ def login():
 
 @app.post("/logout")
 def logout():
-    session_id = session.get("qm_session_id")
-    if isinstance(session_id, str):
-        with _active_sessions_lock:
-            _active_sessions.pop(session_id, None)
-    session.clear()
+    _invalidate_browser_session()
     return redirect(url_for("login"))
 
 
@@ -317,7 +346,7 @@ def _cli_request_allowed() -> bool:
 
 @app.get("/api/cli/status")
 def cli_status():
-    return jsonify({"mode": mode(), "available": mode() in {"serial", "virtual"} and cli_enabled(), "connected": cli_session.connected, "message": "CLI virtual habilitada; sem hardware." if mode() == "virtual" else "CLI habilitada." if cli_enabled() else "CLI bloqueada. Defina QM_ENABLE_CLI=true somente em ambiente autorizado."})
+    return jsonify({"mode": mode(), "available": mode() in {"serial", "virtual"} and cli_enabled(), **cli_session.status(request.headers.get("X-CLI-Token")), "message": "CLI virtual habilitada; sem hardware." if mode() == "virtual" else "CLI habilitada." if cli_enabled() else "CLI bloqueada. Defina QM_ENABLE_CLI=true somente em ambiente autorizado."})
 
 
 def cli_enabled():
@@ -335,10 +364,16 @@ def cli_open():
     if mode() not in {"serial", "virtual"}:
         return jsonify({"ok": False, "error": "O terminal CLI integrado exige QM_MODE=serial e o cabo console conectado a este computador."}), 409
     try:
-        session = cli_session.open(serial_settings())
-        return jsonify({"ok": True, **session})
+        owner = session.get("qm_session_id")
+        result = cli_session.open(serial_settings(), owner_id=owner)
+        if not _session_registry.valid(owner, AUTH_USERNAME, _credential_version()):
+            cli_session.request_close(result["token"])
+            return jsonify({"ok": False, "error": "Sessão encerrada durante a abertura. Entre novamente."}), 401
+        session["qm_cli_token"] = result["token"]
+        return jsonify({"ok": True, **result})
     except (SerialCLIError, SerialReadOnlyError) as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 503
+        status_code = 503 if _session_registry.valid(session.get("qm_session_id"), AUTH_USERNAME, _credential_version()) else 401
+        return jsonify({"ok": False, "error": str(exc)}), status_code
 
 
 @app.post("/api/cli/send")
@@ -366,6 +401,7 @@ def cli_close():
         payload = request.get_json(silent=True) or {}
         if not isinstance(payload, dict): return jsonify({"ok": False, "error": "JSON inválido."}), 400
         cli_session.close(payload.get("token"))
+        session.pop("qm_cli_token", None)
         if mode() == "serial": physical_dashboard.invalidate()
         return jsonify({"ok": True, "message": "Sessão virtual encerrada." if mode() == "virtual" else "Sessão serial encerrada; porta COM liberada."})
     except SerialCLIError as exc:
@@ -535,12 +571,17 @@ def configuration_status():
 
 
 @app.post("/api/config/preview")
+@_serial_exclusive
 def configuration_preview():
     if mode() not in {"serial", "virtual"}:
         return jsonify({"error": "A configuração requer QM_MODE=serial e o cabo console local."}), 409
+    if cli_session.connected:
+        return jsonify({"ok": False, "error": "Encerre a sessão CLI antes de preparar uma configuração."}), 409
     try:
         payload = request.get_json(silent=True)
         plan = build_plan(payload)
+        if plan.action in {"set_trunk_port", "set_hybrid_port"}:
+            plan = prepare_plan(serial_settings(), plan)
         if mode() == "virtual":
             from serial_config import _verify_vlan_preconditions
             from serial_readonly import open_connection
@@ -550,7 +591,7 @@ def configuration_preview():
         return jsonify({
             "ok": True, "token": token, "action": plan.action,
             "summary": plan.summary, "commands": list(plan.commands),
-            "warnings": (["SIMULAÇÃO: somente o estado virtual será alterado."] if mode() == "virtual" else list(plan.warnings)),
+            "warnings": (["SIMULAÇÃO: somente o estado virtual será alterado."] + list(plan.warnings) if mode() == "virtual" else list(plan.warnings)),
             "expires_in_seconds": 300,
         })
     except ConfigurationError as exc:

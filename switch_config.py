@@ -23,6 +23,7 @@ class ConfigurationPlan:
     summary: str
     commands: tuple[str, ...]
     warnings: tuple[str, ...]
+    expected_port_mode: str | None = None
 
 
 def _vlan_id(value: object) -> int:
@@ -80,6 +81,12 @@ def _vlan_words(values: list[int]) -> str:
     return " ".join(str(value) for value in values)
 
 
+def _vlan_commands(prefix: str, values: list[int], suffix: str = "") -> list[str]:
+    # The legacy S3900 command manual permits at most ten VLAN IDs/ranges per line.
+    return [prefix + _vlan_words(values[i:i + 10]) + suffix
+            for i in range(0, len(values), 10)]
+
+
 def build_plan(payload: object) -> ConfigurationPlan:
     if not isinstance(payload, dict):
         raise ConfigurationError("A solicitação de configuração está inválida.")
@@ -126,9 +133,11 @@ def build_plan(payload: object) -> ConfigurationPlan:
             pvid = _vlan_id(payload.get("pvid", 1))
             if pvid not in vlans:
                 raise ConfigurationError("A VLAN nativa/PVID precisa estar incluída na lista permitida do trunk.")
-            commands = tuple(base + ["port link-type trunk", f"port trunk permit vlan {_vlan_words(vlans)}", f"port trunk pvid vlan {pvid}", "quit", "return"])
+            commands = tuple(base + ["port link-type trunk", "undo port trunk permit vlan all"]
+                             + _vlan_commands("port trunk permit vlan ", vlans)
+                             + [f"port trunk pvid vlan {pvid}", "quit", "return"])
             summary = f"Configurar porta {number} como trunk (PVID {pvid})"
-            warnings.append("Revise a lista completa de VLANs permitidas e o PVID antes de aplicar; o link pode ser interrompido.")
+            warnings.append("A lista substitui todas as VLANs anteriores: a prévia remove as permissões antes de reaplicá-las. Isso interrompe o tráfego momentaneamente; não há atomicidade nem rollback automático.")
         elif action == "set_hybrid_port":
             tagged = _vlan_list(payload.get("tagged_vlans"), "VLANs tagged") if payload.get("tagged_vlans") else []
             untagged = _vlan_list(payload.get("untagged_vlans"), "VLANs untagged") if payload.get("untagged_vlans") else []
@@ -140,15 +149,15 @@ def build_plan(payload: object) -> ConfigurationPlan:
             pvid = _vlan_id(payload.get("pvid", 1))
             if pvid not in untagged:
                 raise ConfigurationError("No modo hybrid, a PVID deve estar entre as VLANs untagged.")
-            commands_list = base + ["port link-type hybrid"]
+            commands_list = base + ["port link-type hybrid", "undo port hybrid vlan 1 to 4094"]
             if tagged:
-                commands_list.append(f"port hybrid vlan {_vlan_words(tagged)} tagged")
+                commands_list.extend(_vlan_commands("port hybrid vlan ", tagged, " tagged"))
             if untagged:
-                commands_list.append(f"port hybrid vlan {_vlan_words(untagged)} untagged")
+                commands_list.extend(_vlan_commands("port hybrid vlan ", untagged, " untagged"))
             commands_list.extend((f"port hybrid pvid vlan {pvid}", "quit", "return"))
             commands = tuple(commands_list)
             summary = f"Configurar porta {number} como hybrid (PVID {pvid})"
-            warnings.append("Revise todas as VLANs tagged/untagged; a configuração pode afetar serviços conectados à porta.")
+            warnings.append("As listas substituem todas as VLANs anteriores: a prévia remove as associações antes de reaplicá-las. Isso interrompe o tráfego momentaneamente; não há atomicidade nem rollback automático.")
         elif action == "set_port_description":
             description = _port_description(payload.get("description"))
             commands = tuple(base + [f"description {description}", "quit", "return"])

@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import time
 from datetime import datetime, timezone
+from dataclasses import replace
 
 from serial_readonly import SerialReadOnlyError, SerialSettings, open_connection
 from switch_config import ConfigurationError, ConfigurationPlan
@@ -175,9 +176,221 @@ def _open(settings: SerialSettings):
     return connection
 
 
+def _parse_vlan_values(value: str) -> set[int]:
+    """Read an explicit interface VLAN list; malformed/partial lists fail closed."""
+    value = value.strip().lower()
+    if value == "none":
+        return set()
+    if value == "all":
+        return set(range(1, 4095))
+    tokens = value.replace(",", " ").split()
+    values: set[int] = set()
+    while tokens:
+        token = tokens.pop(0)
+        match = re.fullmatch(r"([0-9]{1,4})(?:-([0-9]{1,4}))?", token)
+        if not match:
+            raise ConfigurationError("Lista de VLANs da verificação está incompleta ou não reconhecida.")
+        start, end = int(match[1]), int(match[2] or match[1])
+        if tokens and tokens[0] == "to":
+            if match[2]:
+                raise ConfigurationError("Intervalo de VLANs ambíguo na verificação.")
+            tokens.pop(0)
+            if not tokens or not tokens[0].isdigit():
+                raise ConfigurationError("Intervalo de VLANs não reconhecido na verificação.")
+            end = int(tokens.pop(0))
+        if not 1 <= start <= end <= 4094:
+            raise ConfigurationError("Intervalo de VLANs inválido na verificação.")
+        values.update(range(start, end + 1))
+    if not value:
+        raise ConfigurationError("Lista de VLANs ausente na verificação.")
+    return values
+
+
+def _interface_vlan_sections(text: str) -> tuple[set[int], set[int]]:
+    """Read complete tagged/untagged sections, including wrapped numeric rows.
+
+    Unknown continuations, repeated headers and lists outside a section are
+    ambiguous. Never silently reduce a longer observed list to its first row.
+    """
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text).replace("\r", "")
+    sections: dict[str, list[str]] = {}
+    current = None
+    header = re.compile(r"^[ \t]*(Tagged|Untagged)[ \t]+VLAN[ \t]+ID[ \t]*:[ \t]*(.*)$", re.I)
+    field = re.compile(r"^[A-Za-z][A-Za-z0-9 /()_.-]*:")
+    for line in text.splitlines():
+        value = line.strip()
+        match = header.fullmatch(line)
+        if match:
+            current = match[1].lower()
+            if current in sections:
+                raise ConfigurationError("Seção VLAN repetida na verificação; resposta ambígua.")
+            sections[current] = [match[2]] if match[2].strip() else []
+            continue
+        if current:
+            if not value or value.startswith(("<", "[")) or field.match(value):
+                current = None
+            elif line.startswith((" ", "\t")):
+                sections[current].append(value)
+                continue
+            else:
+                raise ConfigurationError("Continuação VLAN não reconhecida na verificação.")
+        elif sections and re.fullmatch(r"[0-9, \t-]+", value):
+            raise ConfigurationError("Lista VLAN fora de uma seção reconhecida; resposta ambígua.")
+    if set(sections) != {"tagged", "untagged"}:
+        raise ConfigurationError("Listas tagged/untagged ausentes na verificação; resultado não confirmado.")
+    tagged = _parse_vlan_values(" ".join(sections["tagged"]))
+    untagged = _parse_vlan_values(" ".join(sections["untagged"]))
+    if tagged & untagged:
+        raise ConfigurationError("A mesma VLAN foi reportada tagged e untagged; resposta ambígua.")
+    return tagged, untagged
+
+
+def _port_mode(text: str, interface: str) -> str:
+    headers = re.findall(r"(?mi)^[ \t]*((?:Ethernet1/0/|GigabitEthernet1/1/)[0-9]+)[ \t]+(?:current[ \t]+state[ \t]*:|is)[ \t]*", text)
+    modes = re.findall(r"(?mi)^[ \t]*(?:Mdi[ \t]+type:[^\r\n]*?[ \t]+)?Port[ \t]+link-type[ \t]*:[ \t]*(access|trunk|hybrid)\b", text)
+    if headers != [interface] or len(modes) != 1:
+        raise ConfigurationError("Interface ou modo atual ausente/ambíguo; gere uma nova prévia após validar a leitura.")
+    return modes[0].lower()
+
+
+def prepare_plan(settings: SerialSettings, plan: ConfigurationPlan) -> ConfigurationPlan:
+    """Resolve a mode transition before issuing its exact, immutable preview."""
+    if plan.action not in {"set_trunk_port", "set_hybrid_port"}:
+        return plan
+    connection = _open(settings)
+    try:
+        connection.reset_input_buffer()
+        connection.write(b"\r")
+        _read_response(connection, settings.timeout_seconds)
+        _check_target(connection, settings)
+        interface = next(command.removeprefix("interface ") for command in plan.commands if command.startswith("interface "))
+        text, _ = _exchange(connection, "display interface " + interface, settings)
+        mode = _port_mode(text, interface)
+        desired = plan.action.removeprefix("set_").removesuffix("_port")
+        commands = [command for command in plan.commands if command != "port link-type access"]
+        if mode not in {"access", desired}:
+            index = commands.index("port link-type " + desired)
+            commands.insert(index, "port link-type access")
+            warnings = plan.warnings + (f"A porta está em modo {mode}: passará por access antes de {desired}, conforme o manual S3900. Todos os comandos estão nesta prévia.",)
+        else:
+            warnings = plan.warnings
+        return replace(plan, commands=tuple(commands), warnings=warnings, expected_port_mode=mode)
+    except (SerialReadOnlyError, OSError) as exc:
+        raise ConfigurationError("Não foi possível preparar a transição; nenhuma configuração foi enviada. " + str(exc)) from exc
+    finally:
+        connection.close()
+
+
+def _configuration_blocks(text: str) -> tuple[list[str], dict[str, list[str]]]:
+    """Require a complete configuration before interpreting absent settings."""
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text).replace("\r", "")
+    raw = [line.strip() for line in text.splitlines() if line.strip()]
+    if not any(re.fullmatch(r"sysname [A-Za-z0-9_.-]+", line) for line in raw) or "return" not in raw:
+        raise ConfigurationError("Não foi possível confirmar uma configuração completa na leitura posterior.")
+    lines = []
+    blocks: dict[str, list[str]] = {}
+    block = None
+    for line in raw:
+        if line == "#":
+            block = None
+            continue
+        if line == "return":
+            break
+        if line.startswith(("<", "[", "display ", "Current configuration", "Saved configuration")):
+            continue
+        lines.append(line)
+        if re.fullmatch(r"(?:interface .+|vlan [0-9]+)", line):
+            block = re.sub(r"^interface Vlan-interface\s*([0-9]+)$", r"interface Vlan-interface \1", line, flags=re.I)
+            blocks[block] = []
+        elif line.startswith(("sysname ", "ip route-static ")):
+            block = None
+        elif block is not None:
+            blocks[block].append(line)
+    return lines, blocks
+
+
+def _verify_result(connection, settings: SerialSettings, plan: ConfigurationPlan) -> str:
+    """Verify observed state, not merely the absence of a CLI error."""
+    def read(command):
+        return _exchange(connection, command, settings)[0]
+
+    if plan.action.startswith("set_") and any(command.startswith("interface Ethernet") or command.startswith("interface Gigabit") for command in plan.commands):
+        interface = next(command.removeprefix("interface ") for command in plan.commands if command.startswith("interface "))
+        text = read("display interface " + interface)
+        mode = _port_mode(text, interface)
+        pvids = re.findall(r"(?mi)^[ \t]*PVID[ \t]*:[ \t]*([0-9]{1,4})\b", text)
+        if plan.action in {"set_access_port", "set_trunk_port", "set_hybrid_port"}:
+            expected_mode = plan.action.removeprefix("set_").removesuffix("_port")
+            expected_pvid = int(next(command.split()[-1] for command in plan.commands if re.fullmatch(r"port (?:access vlan|trunk pvid vlan|hybrid pvid vlan) [0-9]+", command)))
+            if mode != expected_mode or len(pvids) != 1 or int(pvids[0]) != expected_pvid:
+                raise ConfigurationError("Modo/PVID lido após aplicar difere do solicitado.")
+            if plan.action in {"set_trunk_port", "set_hybrid_port"}:
+                observed_tagged, observed_untagged = _interface_vlan_sections(text)
+                if plan.action == "set_trunk_port":
+                    allowed = set()
+                    for command in plan.commands:
+                        if command.startswith("port trunk permit vlan "):
+                            allowed.update(_parse_vlan_values(command.removeprefix("port trunk permit vlan ")))
+                    expected_tagged, expected_untagged = allowed - {expected_pvid}, {expected_pvid}
+                else:
+                    expected_tagged, expected_untagged = set(), set()
+                    for command in plan.commands:
+                        match = re.fullmatch(r"port hybrid vlan ([0-9 ]+) (tagged|untagged)", command)
+                        if match:
+                            (expected_tagged if match[2] == "tagged" else expected_untagged).update(_parse_vlan_values(match[1]))
+                if observed_tagged != expected_tagged or observed_untagged != expected_untagged:
+                    raise ConfigurationError("As VLANs lidas após aplicar diferem das listas solicitadas; resultado não confirmado.")
+        elif plan.action == "set_port_description":
+            expected = next(command.removeprefix("description ") for command in plan.commands if command.startswith("description "))
+            if not re.search(r"(?mi)^\s*Description\s*:\s*" + re.escape(expected) + r"\s*$", text):
+                raise ConfigurationError("Descrição lida após aplicar difere da solicitada.")
+        else:
+            # DOWN alone means no physical link, not necessarily shutdown.
+            _, blocks = _configuration_blocks(read("display current-configuration"))
+            key = "interface " + interface
+            if key not in blocks:
+                raise ConfigurationError("Interface ausente na configuração posterior; estado administrativo não confirmado.")
+            shutdown = "shutdown" in blocks[key]
+            if shutdown != ("shutdown" in plan.commands):
+                raise ConfigurationError("Estado administrativo lido após aplicar difere do solicitado.")
+        return "display interface " + interface
+
+    current = read("display current-configuration")
+    lines, blocks = _configuration_blocks(current)
+    if plan.action in {"create_vlan", "rename_vlan", "delete_vlan"}:
+        vlan = next(command.removeprefix("undo ") for command in plan.commands if re.fullmatch(r"(?:undo )?vlan [0-9]+", command))
+        present = vlan in blocks
+        if present != (plan.action != "delete_vlan"):
+            raise ConfigurationError("Existência da VLAN após aplicar difere do solicitado.")
+        descriptions = [command for command in plan.commands if command.startswith("description ")]
+        if descriptions and descriptions[0] not in blocks.get(vlan, []):
+            raise ConfigurationError("Descrição da VLAN após aplicar difere da solicitada.")
+    elif plan.action == "set_sysname":
+        expected = next(command for command in plan.commands if command.startswith("sysname "))
+        if expected not in lines:
+            raise ConfigurationError("Nome do equipamento após aplicar difere do solicitado.")
+    elif plan.action == "set_management_ip":
+        interface = next(command for command in plan.commands if command.startswith("interface "))
+        expected = next(command for command in plan.commands if command.startswith("ip address "))
+        if expected not in blocks.get(interface, []):
+            raise ConfigurationError("IP de gestão após aplicar difere do solicitado.")
+    elif plan.action in {"add_static_route", "delete_static_route"}:
+        expected = next(command.removeprefix("undo ") for command in plan.commands if re.fullmatch(r"(?:undo )?ip route-static .+", command))
+        if (expected in lines) != (plan.action == "add_static_route"):
+            raise ConfigurationError("Rota estática após aplicar difere do solicitado.")
+    elif plan.action == "save":
+        saved, _ = _configuration_blocks(read("display saved-configuration"))
+        if lines != saved:
+            raise ConfigurationError("Configuração salva difere da configuração em execução.")
+    else:
+        raise ConfigurationError("A operação não possui verificação posterior implementada.")
+    return "display saved-configuration" if plan.action == "save" else "display current-configuration"
+
+
 def execute_plan(settings: SerialSettings, plan: ConfigurationPlan) -> list[dict[str, str]]:
     connection = _open(settings)
     output: list[dict[str, str]] = []
+    completed: list[str] = []
     try:
         connection.reset_input_buffer()
         connection.write(b"\r")
@@ -185,18 +398,32 @@ def execute_plan(settings: SerialSettings, plan: ConfigurationPlan) -> list[dict
         version = _check_target(connection, settings)
         output.append({"command": "display version", "output": version})
         _verify_vlan_preconditions(connection, settings, plan)
+        if plan.action in {"set_trunk_port", "set_hybrid_port"}:
+            if plan.expected_port_mode is None:
+                raise ConfigurationError("A transição requer uma prévia preparada com leitura do modo atual. Nenhuma configuração foi enviada.")
+            interface = next(command.removeprefix("interface ") for command in plan.commands if command.startswith("interface "))
+            observed, _ = _exchange(connection, "display interface " + interface, settings)
+            if _port_mode(observed, interface) != plan.expected_port_mode:
+                raise ConfigurationError("O modo da porta mudou desde a prévia. Gere uma nova prévia; nenhuma configuração foi enviada.")
         for command in plan.commands:
             response, confirmation = _exchange(connection, command, settings, allow_confirmation=(command == "save"))
             if confirmation:
                 response, _ = _exchange(connection, "y", settings)
+            completed.append(command)
             output.append({"command": command, "output": response})
+        verified_command = _verify_result(connection, settings, plan)
+        # Raw configuration may contain secrets; return only the verification result.
+        output.append({"command": verified_command, "output": "Estado solicitado confirmado por leitura posterior."})
         return output
-    except ConfigurationError:
+    except (ConfigurationError, SerialReadOnlyError, OSError) as exc:
         # Best effort: leave a command subview without issuing any other configuration changes.
         try:
             connection.write(b"return\r")
         except Exception:
             pass
+        if completed:
+            raise ConfigurationError("Operação não confirmada; pode haver alterações parciais, sem rollback automático. "
+                                     "Comandos concluídos: " + "; ".join(completed) + ". " + str(exc)) from exc
         raise
     finally:
         connection.close()

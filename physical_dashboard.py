@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import re
 import time
+import threading
 from datetime import datetime, timezone
 
 from serial_readonly import (SerialReadOnlyError, _read_until_prompt, _clean_output,
@@ -13,8 +14,8 @@ from switch_config import ConfigurationError
 from switch_text import command_rejected
 
 INTERVAL = 4
-PORT_BATCH = 3
-VLAN_BATCH = 2
+STALE_AFTER_SECONDS = 180
+PORT_FIELDS = ("state", "admin", "pvid", "mode", "description", "tagged", "untagged", "rx_bps", "tx_bps")
 
 
 def now():
@@ -49,10 +50,17 @@ def parse_identity(text):
 def parse_port(text, number):
     text = terminal_text(text)
     interface = interface_name(number)
+    headers = re.findall(
+        r"(?mi)^[ \t]*((?:GigabitEthernet|Ethernet)1/[01]/[0-9]{1,2})[ \t]+"
+        r"(?:current[ \t]+state[ \t]*:|is)[ \t]*", text)
+    # Field labels have no interface identity of their own. Require the exact
+    # section and reject mixed/late responses before associating any field.
+    if not headers or any(name.lower() != interface.lower() for name in headers):
+        return None
     link = _field(text, rf"^[ \t]*{re.escape(interface)}[ \t]+(?:current[ \t]+state[ \t]*:|is)[ \t]*(UP|DOWN|Administratively[ \t]+DOWN)\b")
     pvid = _field(text, r"\bPVID[ \t]*:[ \t]*(\d{1,4})\b")
     mode = _field(text, r"\bPort[ \t]+link-type[ \t]*:[ \t]*(access|trunk|hybrid)\b")
-    desc = _field(text, r"^[ \t]*Description[ \t]*:[ \t]*([^\n]+)")
+    desc = _field(text, r"^[ \t]*Description[ \t]*:[ \t]*([^\n]*)")
     tagged = _field(text, r"^[ \t]*Tagged[ \t]+VLAN[ \t]+ID[ \t]*:[ \t]*([^\n]+)")
     untagged = _field(text, r"^[ \t]*Untagged[ \t]+VLAN[ \t]+ID[ \t]*:[ \t]*([^\n]+)")
     rx = _field(text, r"^[ \t]*Last[ \t]+\d+[ \t]+seconds[ \t]+input:[ \t]*\d+[ \t]+packets/sec[ \t]+(\d+)[ \t]+bytes/sec")
@@ -61,7 +69,7 @@ def parse_port(text, number):
         return None
     return {"number": number, "interface": interface,
             "state": ("up" if link.lower() == "up" else "down") if link else None,
-            "admin": False if link and "administratively" in link.lower() else None,
+            "admin": (False if "administratively" in link.lower() else True if link.lower() == "up" else None) if link else None,
             "pvid": int(pvid) if pvid and 1 <= int(pvid) <= 4094 else None,
             "mode": mode.lower() if mode else None, "description": desc,
             "tagged": tagged, "untagged": untagged,
@@ -160,25 +168,55 @@ def parse_vlan_detail(text, vlan):
     }
 
 
+def _epoch(value):
+    try:
+        stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return stamp.timestamp() if stamp.tzinfo else None
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _expired(value, instant=None):
+    stamp = _epoch(value)
+    return stamp is None or (time.time() if instant is None else instant) - stamp > STALE_AFTER_SECONDS
+
+
 def reconcile_vlan_members(data):
-    """Combine confirmed VLAN lists and individual access-port configuration."""
+    """Use newer explicit access observations without reviving older membership."""
     for row in data.get("vlans") or []:
-        vlan = row["id"]
         tagged = set(row.get("tagged_numbers", []))
         untagged = set(row.get("untagged_numbers", []))
-        verified = set()
+        extra = set()
+        observed = row.get("field_observed_at")
+        # A later name/partial response must not refresh retained membership.
+        # Legacy/parser-only rows predate per-field timestamps.
+        detail_at = _epoch(observed.get("membership") if observed is not None
+                           else row.get("collected_at"))
         for port in data.get("ports", []):
-            if (port.get("collected_at") and port.get("mode") == "access"
-                    and port.get("pvid") == vlan):
-                verified.add(port["number"])
-        extra = verified - untagged
-        untagged.update(verified)
+            observed = port.get("field_observed_at", {})
+            stamps = [observed.get(key, port.get("collected_at")) for key in ("mode", "pvid")]
+            if (port.get("read_error") or any(_expired(stamp) for stamp in stamps)
+                    or any(key in port.get("unconfirmed_fields", []) for key in ("mode", "pvid"))):
+                continue
+            # The pair is only as new as its oldest constituent field.
+            port_at = min(_epoch(stamp) for stamp in stamps)
+            if detail_at is not None and port_at <= detail_at:
+                continue
+            if port.get("mode") == "access":
+                number = port["number"]
+                tagged.discard(number)
+                untagged.discard(number)
+                if port.get("pvid") == row["id"]:
+                    untagged.add(number)
+                    extra.add(number)
         partial = bool(row.get("membership_partial"))
-        if tagged or untagged:
-            row["members"] = _members_label(tagged, untagged, partial=partial)
-            row["membership_from_ports"] = sorted(extra)
-        elif row.get("membership_reported"):
-            row["members"] = "Nenhuma" if not partial else None
+        row["membership_from_ports"] = sorted(extra)
+        row["members"] = _members_label(tagged, untagged, partial=partial)
+        # Effective lists are derived afresh from source observations, never fed back.
+        row["effective_tagged_numbers"] = sorted(tagged)
+        row["effective_untagged_numbers"] = sorted(untagged)
+        if not tagged and not untagged and not row.get("membership_reported"):
+            row["members"] = None
 
 
 def parse_mac_table(text):
@@ -207,8 +245,9 @@ def parse_mac_table(text):
 
 
 class PhysicalDashboard:
-    """Single-process cache, accessed under the application's serial request lock."""
+    """Read-only collector with atomic publications and fair per-port scheduling."""
     def __init__(self):
+        self._lock = threading.RLock()
         self.reset()
 
     def reset(self):
@@ -219,66 +258,102 @@ class PhysicalDashboard:
         self.port_cursor = 0
         self.vlan_cursor = 0
         self.stage = 0
-        self.brief_supported = None
         self.mac_attempt = 0.0
         self.priority_ports = set()
         self.priority_vlans = set()
+        self.priority_vlan_cursor = 0
+        self.priority_vlan_turn = True
         self.settings_key = None
         self.dirty = True
         self.error = None
 
     def invalidate(self, plan=None):
-        self.dirty = True
-        self.last_attempt = 0.0
-        self.mac_attempt = 0.0
-        if plan is None:
-            self.port_cursor = 0
-            self.vlan_cursor = 0
-            return
-        for command in plan.commands:
-            for n in range(1, 29):
-                if command.lower() == ("interface " + interface_name(n)).lower():
-                    self.priority_ports.add(n)
-                    break
-            if re.fullmatch(r"(?:undo )?vlan [0-9]+|interface Vlan-interface [0-9]+|port (?:access vlan|trunk pvid vlan|hybrid pvid vlan) [0-9]+", command):
-                vlan = int(command.rsplit(" ", 1)[1])
-                if 1 <= vlan <= 4094:
-                    self.priority_vlans.add(vlan)
+        with self._lock:
+            self.dirty = True
+            self.last_attempt = 0.0
+            self.mac_attempt = 0.0
+            if plan is None:
+                if self.data:
+                    for port in self.data["ports"]:
+                        port["read_error"] = "Estado pendente após uso da CLI."
+                    for row in self.data.get("vlans") or []:
+                        row["read_error"] = "Estado pendente após uso da CLI."
+                return
+            for command in plan.commands:
+                for n in range(1, 29):
+                    if command.lower() == ("interface " + interface_name(n)).lower():
+                        self.priority_ports.add(n)
+                        if self.data:
+                            self.data["ports"][n - 1]["read_error"] = "Alteração aguardando nova leitura."
+                        break
+                if re.fullmatch(r"(?:undo )?vlan [0-9]+|interface Vlan-interface [0-9]+|port (?:access vlan|trunk pvid vlan|hybrid pvid vlan) [0-9]+", command):
+                    vlan = int(command.rsplit(" ", 1)[1])
+                    if 1 <= vlan <= 4094:
+                        self.priority_vlans.add(vlan)
+                        for row in (self.data or {}).get("vlans") or []:
+                            if row["id"] == vlan:
+                                row["read_error"] = "Alteração aguardando nova leitura."
 
     def cached(self):
-        return {"snapshot": copy.deepcopy(self.data), "outputs": copy.deepcopy(self.outputs),
-                "stale": self.dirty or bool(self.error) or time.monotonic() - self.last_success > INTERVAL * 3,
-                "message": self.error, "collected_at": self.data.get("collected_at") if self.data else None}
+        with self._lock:
+            snapshot = copy.deepcopy(self.data)
+            outputs = copy.deepcopy(self.outputs)
+            stale = self.dirty or bool(self.error) or time.monotonic() - self.last_success > INTERVAL * 3
+            error = self.error
+        if snapshot:
+            instant = time.time()
+            for port in snapshot["ports"]:
+                observed = port.get("field_observed_at", {})
+                port["field_stale"] = {
+                    key: bool(port.get("read_error")) or key in port.get("unconfirmed_fields", [])
+                         or _expired(observed.get(key), instant)
+                    for key in PORT_FIELDS
+                }
+                known = [key for key in PORT_FIELDS if port.get(key) is not None]
+                port["stale"] = not known or any(port["field_stale"][key] for key in known)
+            for row in snapshot.get("vlans") or []:
+                observed = row.get("field_observed_at", {})
+                row["membership_stale"] = bool(row.get("read_error")) or bool(row.get("membership_partial")) or _expired(observed.get("membership"), instant)
+                row["field_stale"] = {"membership": row["membership_stale"],
+                                      "name": _expired(observed.get("name"), instant)}
+                row["stale"] = (bool(row.get("read_error")) or _expired(row.get("collected_at"), instant)
+                                or row["membership_stale"] or (row.get("name") is not None and row["field_stale"]["name"]))
+            mac = snapshot.get("mac_table")
+            if mac is not None:
+                mac["stale"] = bool(mac.get("read_error")) or _expired(mac.get("collected_at"), instant)
+            snapshot["inventory_stale"] = bool(snapshot.get("inventory_error")) or bool(snapshot.get("inventory_missing")) or _expired(snapshot.get("inventory_at"), instant)
+            snapshot["stale_after_seconds"] = STALE_AFTER_SECONDS
+            snapshot["coverage_partial"] = any(port["stale"] for port in snapshot["ports"]) or snapshot["inventory_stale"] or any(row["stale"] or row["membership_stale"] for row in snapshot.get("vlans") or [])
+        return {"snapshot": snapshot, "outputs": outputs, "stale": stale,
+                "message": error, "collected_at": snapshot.get("collected_at") if snapshot else None}
 
     def collect(self, settings, force=False):
-        """Read at most a small group of read-only CLI commands per poll.
-
-        Each successful detail replaces only that detail. A rejected, malformed,
-        or timed-out command never erases a previously verified observation.
-        """
         key = (settings.port, settings.baud_rate)
         if self.settings_key != key:
             self.reset()
             self.settings_key = key
         if not force and not self.dirty and time.monotonic() - self.last_attempt < INTERVAL:
             return self.cached()
-
         self.last_attempt = time.monotonic()
-        self.error = None
-        outputs = []
         data = copy.deepcopy(self.data) if self.data else {
-            "ports": [
-                {"number": n, "interface": interface_name(n), "state": None,
-                 "admin": None, "pvid": None, "mode": None, "description": None,
-                 "tagged": None, "untagged": None, "rx_bps": None,
-                 "tx_bps": None, "collected_at": None}
-                for n in range(1, 29)
-            ],
+            "ports": [{"number": n, "interface": interface_name(n),
+                       **dict.fromkeys(PORT_FIELDS), "collected_at": None,
+                       "field_observed_at": {}} for n in range(1, 29)],
             "vlans": None,
         }
-        notes = []
+        outputs, notes, failures = [], [], []
+        observed_at = None
         active_command = "conexão serial"
         deadline = time.monotonic() + 22
+
+        def observe():
+            nonlocal observed_at
+            observed_at = now()
+            return observed_at
+
+        def fail(message):
+            notes.append(message)
+            failures.append(message)
 
         def query(connection, command):
             nonlocal active_command
@@ -290,165 +365,198 @@ class PhysicalDashboard:
             raw = _read_until_prompt(connection, min(settings.timeout_seconds, 10, remaining))
             output = _clean_output(raw, command)
             outputs.append({"command": command, "output": output})
-            if command_rejected(output):
-                notes.append("Consulta não suportada pelo firmware: " + command)
-                return None
             return output
 
         def publish():
-            data.update(collected_at=now(), port=settings.port,
-                        baud_rate=settings.baud_rate, notes=list(notes),
-                        expected_ports=28)
+            if observed_at:
+                data["collected_at"] = observed_at
+            data.update(port=settings.port, baud_rate=settings.baud_rate,
+                        notes=list(notes), expected_ports=28)
             reconcile_vlan_members(data)
-            self.data = copy.deepcopy(data)
-            self.outputs = copy.deepcopy(outputs)
-            self.last_success = time.monotonic()
-            self.dirty = False
+            with self._lock:
+                # Failed bootstrap must never create a usable unidentified
+                # snapshot or bypass the version check on the next attempt.
+                self.data = copy.deepcopy(data) if data.get("identity_verified") else None
+                self.outputs = copy.deepcopy(outputs)
+                if observed_at and data.get("identity_verified"):
+                    self.last_success = time.monotonic()
+                self.error = " ".join(failures) or None
+                self.dirty = False
 
         def refresh_inventory(connection):
+            data["inventory_error"] = "Leitura do inventário não concluída."
             try:
-                inventory = _parse_vlan_inventory(query(connection, "display vlan") or "")
-            except ConfigurationError as exc:
-                notes.append("Inventário VLAN não reconhecido nesta tentativa; dados anteriores preservados.")
+                text = query(connection, "display vlan")
+                if command_rejected(text):
+                    raise ConfigurationError("Consulta rejeitada.")
+                inventory = _parse_vlan_inventory(text)
+            except ConfigurationError:
+                data["inventory_error"] = "Inventário VLAN não reconhecido; dados anteriores preservados."
+                fail(data["inventory_error"])
                 return
             old = {v["id"]: v for v in data.get("vlans") or []}
-            # Some firmware/terminal responses list only part of the inventory.
-            # Keep separately confirmed VLANs with their original observation
-            # timestamp instead of silently discarding them.
-            confirmed = {vid for vid, row in old.items()
-                         if row.get("verified_individually")}
-            missing_confirmed = confirmed - inventory
-            data["vlans"] = [
-                old.get(v, {"id": v, "name": None, "members": None,
-                            "note": "Inventário", "collected_at": None})
-                for v in sorted(inventory | confirmed)
-            ]
-            if missing_confirmed:
-                notes.append("Inventário incompleto: VLAN(s) "
-                             + ", ".join(map(str, sorted(missing_confirmed)))
-                             + " confirmada(s) anteriormente em consulta individual.")
-                for row in data["vlans"]:
-                    if row["id"] in missing_confirmed:
-                        row["note"] = "Consulta individual anterior · ausente no inventário"
+            confirmed = {vid for vid, row in old.items() if row.get("verified_individually")}
+            missing = confirmed - inventory
+            data["vlans"] = [old.get(v, {"id": v, "name": None, "members": None,
+                                       "note": "Inventário", "collected_at": None})
+                             for v in sorted(inventory | confirmed)]
+            data["inventory_at"] = observe()
+            data["inventory_error"] = None
+            data["inventory_missing"] = sorted(missing)
+            self.priority_vlans.update(missing)
+            for row in data["vlans"]:
+                if row["id"] in missing:
+                    row["note"] = "Consulta individual anterior · ausente no inventário"
+                    row["read_error"] = "Ausência no inventário aguardando confirmação individual."
+            if missing:
+                notes.append("Inventário incompleto; confirmando individualmente as VLANs ausentes.")
 
-        def refresh_port(connection, n):
-            output = query(connection, "display interface " + interface_name(n))
-            new = parse_port(output or "", n)
+        def refresh_port(connection, number):
+            old = data["ports"][number - 1]
+            old["read_error"] = "Leitura da porta não concluída."
+            text = query(connection, "display interface " + interface_name(number))
+            new = None if command_rejected(text) else parse_port(text, number)
             if not new:
-                notes.append(f"Porta {n}: resposta não reconhecida; leitura anterior preservada.")
+                old["read_error"] = f"Porta {number}: resposta não reconhecida; leitura anterior preservada."
+                fail(old["read_error"])
                 return
-            old = data["ports"][n - 1]
-            if new["state"] is None:
-                new["state"] = old.get("state")
-                new["link_at"] = old.get("link_at")
-            else:
-                new["link_at"] = new["collected_at"]
-            # Never overwrite a valid field with None from a partial response.
-            old.update({k: v for k, v in new.items() if v is not None})
-            old["collected_at"] = new["collected_at"]
+            stamp = observe()
+            observed = old.setdefault("field_observed_at", {})
+            old["unconfirmed_fields"] = [key for key in PORT_FIELDS if new.get(key) is None]
+            for field in PORT_FIELDS:
+                if new.get(field) is not None:
+                    old[field] = new[field]
+                    observed[field] = stamp
+            old["collected_at"] = stamp
+            old["read_error"] = None
+            if new.get("state") is not None:
+                old["link_at"] = stamp
+            if new.get("pvid") and not any(row["id"] == new["pvid"] for row in data.get("vlans") or []):
+                # A port hint schedules a query; it never creates a VLAN row.
+                self.priority_vlans.add(new["pvid"])
 
         def refresh_vlan_detail(connection, vlan):
-            # Do not infer that a VLAN exists merely from a port PVID, a MAC,
-            # a cached inventory number or its previous existence.
-            new = parse_vlan_detail(query(connection, f"display vlan {vlan}") or "", vlan)
+            for row in data.get("vlans") or []:
+                if row["id"] == vlan:
+                    row["read_error"] = "Leitura da VLAN não concluída."
+            text = query(connection, f"display vlan {vlan}")
+            ids = re.findall(r"(?mi)^[ \t]*VLAN[ \t]+ID[ \t]*:[ \t]*([0-9]{1,4})\b", text)
+            absent = re.search(rf"(?mi)^[ \t]*(?:%[ \t]*)?(?:Error:[ \t]*)?(?:The[ \t]+)?VLAN(?:[ \t]+{vlan})?[ \t]+(?:does[ \t]+not[ \t]+exist|doesn't[ \t]+exist|not[ \t]+found)[.!]?[ \t]*$", text)
+            if absent and not ids:
+                data["vlans"] = [row for row in data.get("vlans") or [] if row["id"] != vlan]
+                data["inventory_missing"] = [v for v in data.get("inventory_missing", []) if v != vlan]
+                observe()
+                notes.append(f"VLAN {vlan}: ausência confirmada por consulta individual.")
+                return
+            new = None if command_rejected(text) else parse_vlan_detail(text, vlan)
             if not new:
-                notes.append(f"VLAN {vlan}: consulta individual não confirmada.")
-                return False
-            new["verified_individually"] = True
-            new["note"] = "Confirmada por display vlan " + str(vlan)
+                message = f"VLAN {vlan}: consulta individual não confirmada; dados anteriores preservados."
+                for row in data.get("vlans") or []:
+                    if row["id"] == vlan:
+                        row["read_error"] = message
+                fail(message)
+                return
+            stamp = observe()
+            new.update(verified_individually=True, read_error=None,
+                       note="Confirmada por display vlan " + str(vlan), collected_at=stamp)
+            new["field_observed_at"] = {} if new["membership_partial"] else {"membership": stamp}
+            if new.get("name") is not None:
+                new["field_observed_at"]["name"] = stamp
             if data.get("vlans") is None:
                 data["vlans"] = []
             for row in data["vlans"]:
                 if row["id"] == vlan:
-                    row.update({k: v for k, v in new.items() if v is not None})
+                    # A partial member list cannot erase historical members or
+                    # make the retained membership appear newly verified.
+                    if new["membership_partial"]:
+                        for key in ("tagged_numbers", "untagged_numbers"):
+                            new[key] = sorted(set(row.get(key, [])) | set(new[key]))
+                        if row.get("field_observed_at", {}).get("membership"):
+                            new["field_observed_at"]["membership"] = row["field_observed_at"]["membership"]
+                    # Missing descriptions keep their original observation time.
+                    if new["name"] is None:
+                        new["name"] = row.get("name")
+                        if row.get("field_observed_at", {}).get("name"):
+                            new["field_observed_at"]["name"] = row["field_observed_at"]["name"]
+                    row.update(new)
                     break
             else:
                 data["vlans"].append(new)
-            data["vlans"].sort(key=lambda v: v["id"])
-            return True
+            data["vlans"].sort(key=lambda row: row["id"])
+            data["inventory_missing"] = [v for v in data.get("inventory_missing", []) if v != vlan]
+
+        def refresh_macs(connection):
+            self.mac_attempt = time.monotonic()
+            if data.get("mac_table") is not None:
+                data["mac_table"]["read_error"] = "Leitura da tabela MAC não concluída."
+            text = query(connection, "display mac-address")
+            macs = None if command_rejected(text) else parse_mac_table(text)
+            if macs is None:
+                message = "Tabela MAC não reconhecida; leitura anterior preservada."
+                if data.get("mac_table") is not None:
+                    data["mac_table"]["read_error"] = message
+                fail(message)
+                return
+            macs["collected_at"] = observe()
+            macs["entries"].sort(key=lambda row: (row["port"], row["vlan"], row["mac"]))
+            data["mac_table"] = macs
 
         try:
             with open_connection(settings) as connection:
                 connection.reset_input_buffer()
                 connection.write(b"\r")
                 active_command = "prompt serial"
-                remaining = max(1, min(settings.timeout_seconds, 10, deadline - time.monotonic()))
-                _read_until_prompt(connection, remaining)
-
-                if self.data is None:
-                    identity = parse_identity(query(connection, "display version") or "")
-                    data.update(identity, name=identity["model"])
+                _read_until_prompt(connection, min(settings.timeout_seconds, 10))
+                if not data.get("identity_verified"):
+                    data.update(parse_identity(query(connection, "display version")))
+                    data["identity_verified"] = True
+                    data["name"] = data["model"]
+                    observe()
                     publish()
                     refresh_inventory(connection)
-                    publish()
-                    # The lab VLAN is verified independently of the inventory,
-                    # whose legacy response can be truncated or malformed.
-                    refresh_vlan_detail(connection, 12)
-                    publish()
-                elif self.dirty:
-                    refresh_inventory(connection)
-                    publish()
-                    if self.priority_ports:
-                        n = min(self.priority_ports)
-                        refresh_port(connection, n)
-                        self.priority_ports.discard(n)
-                        publish()
-                    elif self.priority_vlans:
-                        v = min(self.priority_vlans)
-                        if any(row["id"] == v for row in data.get("vlans") or []):
-                            refresh_vlan_detail(connection, v)
-                        self.priority_vlans.discard(v)
-                        publish()
                 else:
-                    stage = self.stage % 13
+                    # Every poll services a port. Priority work alternates with
+                    # normal round-robin so repeated edits cannot starve others.
+                    stage = self.stage
                     self.stage += 1
-                    if self.priority_ports:
-                        n = min(self.priority_ports)
-                        refresh_port(connection, n)
-                        self.priority_ports.discard(n)
-                    elif self.priority_vlans:
-                        v = min(self.priority_vlans)
-                        if any(row["id"] == v for row in data.get("vlans") or []):
-                            refresh_vlan_detail(connection, v)
-                        self.priority_vlans.discard(v)
-                    elif stage == 0:
-                        refresh_inventory(connection)
-                    elif stage in {1, 2, 3, 5, 6, 7, 9, 10, 11}:
-                        n = (stage - 1) % 4 + 1
-                        n = {1: 1, 2: 2, 3: 3, 5: 1, 6: 2,
-                             7: 3, 9: 1, 10: 2, 11: 3}[stage]
-                        refresh_port(connection, n)
-                    elif stage == 4:
-                        # Periodic independent check of the lab VLAN.
-                        refresh_vlan_detail(connection, 12)
-                    elif stage == 8:
-                        n = 4 + (self.port_cursor % 25)
+                    if self.priority_ports and stage % 2:
+                        number = min(self.priority_ports)
+                        self.priority_ports.discard(number)
+                    else:
+                        number = self.port_cursor % 28 + 1
                         self.port_cursor += 1
-                        refresh_port(connection, n)
-                    elif stage == 12 and (not self.mac_attempt or time.monotonic() - self.mac_attempt >= 60):
-                        self.mac_attempt = time.monotonic()
-                        new_macs = parse_mac_table(query(connection, "display mac-address") or "")
-                        if new_macs is not None:
-                            new_macs["entries"].sort(key=lambda r: (r["port"], r["vlan"], r["mac"]))
-                            data["mac_table"] = new_macs
-                        else:
-                            notes.append("Tabela MAC não reconhecida; leitura anterior preservada.")
-                    elif data.get("vlans"):
-                        rows = data["vlans"]
-                        vlan = rows[self.vlan_cursor % len(rows)]["id"]
-                        self.vlan_cursor += 1
-                        refresh_vlan_detail(connection, vlan)
-                    publish()
+                        self.priority_ports.discard(number)
+                    refresh_port(connection, number)
+                    maintenance = stage % 4
+                    if maintenance == 0:
+                        refresh_inventory(connection)
+                    elif maintenance == 1:
+                        # Alternate urgent and ordinary work. Rotate urgent IDs
+                        # too: a truncated inventory may re-add the lowest ID on
+                        # every poll, which must not starve later VLANs.
+                        rows = data.get("vlans") or []
+                        if self.priority_vlans and (self.priority_vlan_turn or not rows):
+                            ordered = sorted(self.priority_vlans)
+                            vlan = next((v for v in ordered if v > self.priority_vlan_cursor), ordered[0])
+                            self.priority_vlan_cursor = vlan
+                            self.priority_vlans.discard(vlan)
+                            self.priority_vlan_turn = False
+                            refresh_vlan_detail(connection, vlan)
+                        elif rows:
+                            vlan = rows[self.vlan_cursor % len(rows)]["id"]
+                            self.vlan_cursor += 1
+                            self.priority_vlans.discard(vlan)
+                            self.priority_vlan_turn = True
+                            refresh_vlan_detail(connection, vlan)
+                    elif maintenance == 2 and (not self.mac_attempt or time.monotonic() - self.mac_attempt >= 60):
+                        refresh_macs(connection)
+                publish()
             return self.cached()
         except (SerialReadOnlyError, OSError, ValueError) as exc:
-            self.error = f"Falha em {active_command}: {exc}"
-            self.dirty = False
-            if self.data is not None:
-                return self.cached()
-            raise SerialReadOnlyError(self.error) from exc
-        except Exception as exc:
-            self.error = "Erro na leitura serial em " + active_command + ". Verifique o console."
-            self.dirty = False
-            if self.data is not None:
-                return self.cached()
-            raise SerialReadOnlyError(self.error) from exc
+            fail(f"Falha em {active_command}: {exc}")
+        except Exception:
+            fail("Erro na leitura serial em " + active_command + ". Verifique o console.")
+        publish()
+        if not data.get("model"):
+            raise SerialReadOnlyError(self.error)
+        return self.cached()

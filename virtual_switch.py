@@ -145,6 +145,26 @@ class VirtualConsole:
         if c=="display version": return VERSION,False
         if c=="display vlan":
             return "Following VLAN exist(s):\n" + ", ".join(v + (" (default)" if v=="1" else "") for v in sorted(s["vlans"],key=int))+"\n\nVLAN ID  Name\n"+"\n".join(f"{v} {n}" for v,n in sorted(s["vlans"].items(),key=lambda x:int(x[0]))),False
+        match = re.fullmatch(r"display vlan (\d+)", c)
+        if match:
+            vlan = str(int(match[1]))
+            if vlan not in s["vlans"]:
+                return "Error: The VLAN does not exist.", False
+            tagged = [_interface(int(n)) for n,p in s["ports"].items() if int(vlan) in p["tagged"]]
+            untagged = [_interface(int(n)) for n,p in s["ports"].items() if int(vlan) in p["untagged"]]
+            return (f"VLAN ID: {vlan}\nDescription: {s['vlans'][vlan]}\nTagged Ports: " +
+                    (" ".join(tagged) or "none") + "\nUntagged Ports: " + (" ".join(untagged) or "none")), False
+        match = re.fullmatch(r"display interface ((?:Ethernet1/0/|GigabitEthernet1/1/)\d+)", c)
+        if match:
+            number = next((n for n in s["ports"] if _interface(int(n)) == match[1]), None)
+            if number is None:
+                raise ValueError("Invalid interface")
+            port = s["ports"][number]
+            state = 'Administratively DOWN' if not port['admin'] else 'UP' if port['link'] else 'DOWN'
+            return (f"{match[1]} current state : {state}\nDescription: {port['description']}\n"
+                    f"PVID: {port['pvid']}\nPort link-type: {port['mode']}\nTagged VLAN ID: " +
+                    (" ".join(map(str, port['tagged'])) or "none") + "\nUntagged VLAN ID: " +
+                    (" ".join(map(str, port['untagged'])) or "none")), False
         if c in {"display interface brief","display interface"}:
             return "\n".join(f"{_interface(int(n))} {'UP' if p['admin'] and p['link'] else 'DOWN'} {p['mode']} PVID {p['pvid']}" for n,p in s["ports"].items()),False
         if c=="display current-configuration": return _configuration(s),False
@@ -166,7 +186,7 @@ class VirtualConsole:
                     del s["vlans"][v]; s["ips"].pop(v,None)
                     for p in s["ports"].values():
                         for tag in ("tagged","untagged"): p[tag]=[x for x in p[tag] if x!=int(v)]
-                        if p["pvid"]==int(v):
+                        if p["pvid"]==int(v) and p["mode"] == "access":
                             p["pvid"]=1
                             if 1 not in p["untagged"]: p["untagged"].append(1)
                     return "",True
@@ -206,6 +226,8 @@ class VirtualConsole:
             p=s["ports"][self.target]
             m=re.fullmatch(r"port link-type (access|trunk|hybrid)",c)
             if m:
+                if p["mode"] != m[1] and p["mode"] != "access" and m[1] != "access":
+                    raise ValueError("A trunk/hybrid transition must pass through access")
                 if p["mode"]!=m[1]: p.update(mode=m[1],pvid=1,tagged=[],untagged=[1])
                 return "",True
             if c in {"shutdown","undo shutdown"}: p["admin"]=c!="shutdown"; return "",True
@@ -224,12 +246,18 @@ class VirtualConsole:
                     if v not in p["untagged"]: raise ValueError("PVID must be untagged")
                     p["pvid"]=v
                 return "",True
+            if c == "undo port trunk permit vlan all" and p["mode"] == "trunk":
+                p.update(tagged=[], untagged=[])
+                return "", True
+            if c == "undo port hybrid vlan 1 to 4094" and p["mode"] == "hybrid":
+                p.update(tagged=[], untagged=[])
+                return "", True
             m=re.fullmatch(r"port trunk permit vlan ([0-9 ]+)",c)
             if m and p["mode"]=="trunk":
                 ids=set(map(int,m[1].split()))
                 if any(str(v) not in s["vlans"] for v in ids): raise ValueError("VLAN does not exist")
                 allowed=set(p["tagged"]+p["untagged"])|ids
-                p["tagged"]=sorted(allowed-{p["pvid"]}); return "",True
+                p["tagged"]=sorted(allowed-{p["pvid"]}); p["untagged"]=sorted(allowed & {p["pvid"]}); return "",True
             m=re.fullmatch(r"port hybrid vlan ([0-9 ]+) (tagged|untagged)",c)
             if m and p["mode"]=="hybrid":
                 ids=set(map(int,m[1].split()))

@@ -75,7 +75,9 @@ class LiveMonitor:
             if result.get("stale"):
                 self._update("desatualizado", result.get("message") or "Leitura parcial; mantendo últimas medições válidas.")
                 return self.retry_interval
-            self._update("ativo", "Leitura automática concluída.", succeeded=True)
+            message = ("Leitura concluída; há recursos pendentes ou antigos. Consulte os horários individuais."
+                       if (result.get("snapshot") or {}).get("coverage_partial") else "Leitura automática concluída.")
+            self._update("ativo", message, succeeded=True)
             return self.interval
         except Exception as exc:
             # No CLI commands/configuration are ever echoed in browser status.

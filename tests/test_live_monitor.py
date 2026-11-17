@@ -61,6 +61,13 @@ class LiveMonitorTest(unittest.TestCase):
         self.assertEqual(live.status()["state"], "desatualizado")
         self.assertIsNone(live.status()["last_success"])
 
+    def test_incomplete_coverage_does_not_backoff_healthy_serial_poll(self):
+        live = LiveMonitor(collect=lambda: {"stale": False, "snapshot": {"coverage_partial": True}},
+                           cli_busy=lambda: False, serial_lock=threading.Lock(), interval=4)
+        self.assertEqual(live._tick(), 4)
+        self.assertIn("horários", live.status()["message"])
+        self.assertEqual(live.status()["state"], "ativo")
+
 
 if __name__ == "__main__":
     unittest.main()

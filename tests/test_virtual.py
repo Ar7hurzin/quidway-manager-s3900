@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from test_manager import manager, PASSWORD
 from serial_readonly import SerialSettings, collect_serial_diagnostics
-from serial_config import execute_plan, export_current_configuration
+from serial_config import prepare_plan, execute_plan, export_current_configuration
 from switch_config import build_plan, ConfigurationError
 from virtual_switch import snapshot, VirtualConsole
 
@@ -22,7 +22,7 @@ class VirtualTest(unittest.TestCase):
         self.mock.start(); self.addCleanup(self.mock.stop)
         self.addCleanup(manager.cli_session.shutdown)
     def apply(self,action,**params):
-        return execute_plan(self.settings,build_plan({"action":action,**params}))
+        return execute_plan(self.settings,prepare_plan(self.settings,build_plan({"action":action,**params})))
     def test_vlan_port_and_persistence(self):
         self.assertEqual(len(snapshot()["ports"]),28)
         self.apply("create_vlan",vlan_id=100,name="LAB")

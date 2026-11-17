@@ -30,12 +30,68 @@ class SerialCLISession:
         self._last_activity = 0.0
         self._settings: SerialSettings | None = None
         self._idle_timer: threading.Timer | None = None
+        self._close_request_lock = threading.Lock()
+        self._close_request_token = None
+        self._owner_id = None
+        self._close_request_owner = None
 
     @property
     def connected(self) -> bool:
-        with self._lock:
+        return self.status()["connected"]
+
+    def status(self, token=None):
+        # The cache/status endpoint must not wait for a slow serial response.
+        # A busy operation conservatively reserves the console until it finishes.
+        if not self._lock.acquire(blocking=False):
+            return {"connected": True, "busy": True, "token_valid": None}
+        try:
+            self._close_if_requested()
             self._expire_if_idle()
-            return self._connection is not None
+            connected = self._connection is not None
+            valid = (connected and isinstance(token, str) and token.isascii()
+                     and secrets.compare_digest(token, self._token or ""))
+            return {"connected": connected, "busy": False, "token_valid": bool(valid)}
+        finally:
+            self._lock.release()
+
+    def request_close(self, token):
+        """Queue owner-only closure without waiting for an in-flight command."""
+        if (not isinstance(token, str) or not token.isascii() or not self._token
+                or not secrets.compare_digest(token, self._token)):
+            return
+        with self._close_request_lock:
+            self._close_request_token = token
+        if self._lock.acquire(blocking=False):
+            try:
+                self._close_if_requested()
+            finally:
+                self._lock.release()
+
+    def request_close_owner(self, owner_id):
+        """Revoke a web owner even before opening has produced a CLI token."""
+        if not isinstance(owner_id, str) or not owner_id:
+            return
+        with self._close_request_lock:
+            if self._owner_id != owner_id:
+                return
+            self._close_request_owner = owner_id
+        if self._lock.acquire(blocking=False):
+            try:
+                self._close_if_requested()
+            finally:
+                self._lock.release()
+
+    def _close_if_requested(self):
+        # Caller holds the serial lock. A delayed request must never close a
+        # newer console which has acquired a different token in the meantime.
+        with self._close_request_lock:
+            token = self._close_request_token
+            owner = self._close_request_owner
+            self._close_request_token = None
+            self._close_request_owner = None
+        if ((token and self._token and secrets.compare_digest(token, self._token))
+                or (owner is not None and owner == self._owner_id)):
+            self._close_unlocked()
 
     def _schedule_idle_close(self) -> None:
         if self._idle_timer:
@@ -80,12 +136,14 @@ class SerialCLISession:
     def _decode(raw: bytes) -> str:
         return decode_switch_text(raw).replace("\r", "").replace("\x00", "")
 
-    def open(self, settings: SerialSettings) -> dict[str, object]:
+    def open(self, settings: SerialSettings, *, owner_id=None) -> dict[str, object]:
         with self._lock:
             self._expire_if_idle()
             if self._connection:
                 raise SerialCLIError("Já existe uma sessão CLI aberta. Encerre-a antes de abrir outra.")
             try:
+                with self._close_request_lock:
+                    self._owner_id = owner_id
                 self._connection = open_connection(settings)
                 self._settings = settings
                 self._connection.reset_input_buffer()
@@ -94,6 +152,9 @@ class SerialCLISession:
                 raw, complete = self._read_response(settings.timeout_seconds)
                 self._token = secrets.token_urlsafe(32)
                 self._last_activity = time.monotonic()
+                self._close_if_requested()
+                if self._connection is None:
+                    raise SerialCLIError("A sessão web foi encerrada durante a abertura; o console foi liberado.")
                 self._schedule_idle_close()
                 return {"token": self._token, "output": self._decode(raw), "complete": complete, "port": settings.port, "baud_rate": settings.baud_rate}
             except SerialCLIError:
@@ -126,6 +187,8 @@ class SerialCLISession:
             except Exception as exc:
                 self._close_unlocked()
                 raise SerialCLIError("A comunicação serial falhou. A sessão foi encerrada para liberar a porta COM.") from exc
+            finally:
+                self._close_if_requested()
 
     def close(self, token: object | None = None) -> None:
         with self._lock:
@@ -140,6 +203,8 @@ class SerialCLISession:
     def _close_unlocked(self) -> None:
         connection, self._connection = self._connection, None
         self._token = None
+        with self._close_request_lock:
+            self._owner_id = None
         self._settings = None
         self._last_activity = 0.0
         if self._idle_timer:

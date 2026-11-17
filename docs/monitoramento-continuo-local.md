@@ -25,10 +25,22 @@ serial, um worker consulta o console em segundo plano; a página apenas lê
 - A coleta física executa pequenos lotes, com intervalo mínimo de ~4 segundos
   entre tentativas e pausa de ~12 segundos após erro. A duração total depende
   do console de 9600 baud, tamanho da resposta e paginação do firmware.
-- Portas 1, 2 e 3 têm prioridade para o teste do YouTube; as demais são
-  percorridas progressivamente.
+- O rodízio percorre as 28 portas por igual, uma por ciclo. Uma alteração
+  guiada pode antecipar sua porta, mas essa prioridade alterna com o rodízio
+  normal. Não há mais portas ou VLANs fixas do laboratório na coleta.
+- Uma passagem normal exige 28 ciclos: as pausas somam pelo menos 112
+  segundos, além do tempo de cada consulta. Isso não garante atualização
+  em 112 segundos; serial lenta, respostas grandes, falhas e CLI aberta
+  aumentam o intervalo.
 - Uma consulta inválida não apaga MACs/VLANs/portas reconhecidos. Cada porta
-  contém horário próprio; informação antiga não representa link atual.
+  contém horários por campo e fica marcada como anterior após 180 segundos
+  sem confirmação ou quando a consulta falha. Um campo ausente em resposta
+  parcial conserva seu valor e horário anteriores, sem parecer recém-lido.
+  Cobertura parcial é exibida mesmo quando a última consulta foi válida.
+- Inventário incompleto não apaga uma VLAN já confirmada. A ausência é
+  verificada individualmente; só uma resposta explícita de inexistência
+  autoriza remover a VLAN do painel. Associações de portas respeitam a
+  precedência temporal das observações.
 - O S3900 reporta alguns indicadores como médias de **300 segundos**, por
   isso o painel é de atualização contínua, não telemetria instantânea.
 - O worker usa somente comandos `display` de leitura. As configurações do
@@ -43,6 +55,13 @@ serial, um worker consulta o console em segundo plano; a página apenas lê
 cd ~/Projetos/quidway-manager-s3900
 .venv/bin/python -m unittest discover -s tests -q
 node --check static/app.js
+node --test tests/frontend_reliability.cjs
 ```
 
-Versão do código publicada na branch `feature/s3900-virtual`. Configurações locais e credenciais não são incluídas no repositório.
+A branch de referência é `feature/s3900-virtual`; as correções de 17/11 estão apenas nesta cópia local, sem commit/push/PR. Configurações locais e credenciais não são incluídas na entrega. O registro opcional `lab_capture.py` grava telemetria de laboratório, não pacotes Ethernet/PCAP.
+
+## Recuperação e registro de laboratório
+
+Uma falha antes da identificação não cria um cache válido. Ao recuperar o console, o monitor repete `display version` e só inicia outras consultas após reconhecer o perfil. Respostas com outra interface ou múltiplas interfaces são rejeitadas. O rodízio de detalhes de VLAN alterna prioridades e consultas normais; prioridades também giram entre os IDs, evitando monopolização por inventários incompletos.
+
+Quando ativado pelo marcador de laboratório, o JSONL inclui horários e flags de validade por campo, além de `collection_stale` para o estado global da coleta e `stale`/`coverage_partial` para o conteúdo. Um `observed_at` da porta não equivale a uma amostra nova de todas as suas taxas. Registros antigos sem metadados por campo não permitem recuperar retroativamente esses horários; não foram reescritos.

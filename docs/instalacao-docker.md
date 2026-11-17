@@ -12,7 +12,7 @@ Este guia cobre o mesmo painel em Windows, Fedora/Linux e contêiner Linux. A in
 git clone https://github.com/Ar7hurzin/quidway-manager-s3900.git
 cd quidway-manager-s3900
 # Caso a versão Light ainda esteja em revisão:
-git switch redesign/light-docker
+git switch feature/s3900-virtual
 ```
 
 O código já contém o painel, arquivos estáticos, scripts e documentação. O arquivo `local-settings.ps1` não vem do GitHub: ele contém o hash de senha e a chave de sessão e deve permanecer local. Não copie seu ambiente `.venv` de Windows para Linux.
@@ -111,7 +111,7 @@ $env:QM_ENABLE_CONFIG_WRITES = 'false'
 $env:QM_ENABLE_CLI = 'false'
 ```
 
-Em Linux troque `COM9` por `/dev/ttyUSB0` (ou o caminho real). O inicializador interpreta somente atribuições reconhecidas; não executa comandos PowerShell no Linux. Reinicie o servidor. Use Atualizar leitura para `display version` e `display vlan`. O painel não inventará métricas reais.
+Em Linux troque `COM9` por `/dev/ttyUSB0` (ou o caminho real). O inicializador interpreta somente atribuições reconhecidas; não executa comandos PowerShell no Linux. Reinicie o servidor. No modo serial, o monitor consulta automaticamente identificação, VLANs, portas e MACs, em lotes. O botão Atualizar leitura fica oculto; cada observação tem seu horário e dados antigos são sinalizados. O painel não inventa métricas reais.
 
 **Docker Linux:** para Docker Engine nativo, use o override, depois de verificar o GID numérico e o caminho:
 

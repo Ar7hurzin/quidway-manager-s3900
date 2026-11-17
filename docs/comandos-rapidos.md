@@ -20,7 +20,7 @@ mkdir -p ~/Projetos
 cd ~/Projetos
 git clone https://github.com/Ar7hurzin/quidway-manager-s3900.git
 cd quidway-manager-s3900
-git switch redesign/light-docker
+git switch feature/s3900-virtual
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python start.py configure
@@ -30,7 +30,7 @@ python3 -m venv .venv
 Se já possui o projeto, atualize na pasta existente, conferindo primeiro `git status` e sem descartar alterações locais:
 
 ```bash
-git switch redesign/light-docker
+git switch feature/s3900-virtual
 git pull --ff-only
 .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python start.py
@@ -43,7 +43,7 @@ Para redefinir usuário e senha, encerre o servidor, execute `.venv/bin/python s
 Na pasta do repositório já baixado, execute:
 
 ```powershell
-git switch redesign/light-docker
+git switch feature/s3900-virtual
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe start.py configure

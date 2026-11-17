@@ -19,10 +19,20 @@ window.fetch = (input, init = {}) => {
 let appStatus = { mode: "demo", ready: false };
 let configStatus = { available: false, writes_enabled: false };
 let pendingConfigPreview = null;
+let configPreviewRevision = 0;
+let configPreviewBusy = false;
+let configApplying = false;
 let cliToken = sessionStorage.getItem("qm_cli_token") || "";
 let cliConnected = false;
 let cliOccupiedElsewhere = false;
 let cliSensitivePrompt = false;
+let cliClosing = false;
+let cliOpening = false;
+let cliSending = false;
+let cliStateRevision = 0;
+let cliStatusRevision = 0;
+let cliStateUncertain = false;
+let cliStatusTimer = null;
 let physicalRefreshBusy = false;
 let physicalTimer = null;
 
@@ -84,7 +94,7 @@ function setMode(status) {
     }
   }
   loadConfigurationStatus();
-  if (pageKind === "cli") loadCliStatus();
+  if (pageKind === "cli" || cliToken) loadCliStatus();
 }
 
 function renderDemo() {
@@ -108,33 +118,38 @@ function renderPhysical(data, stale = false) {
   if (!data) return;
   const text = (id, value) => { $(id).textContent = value ?? "—"; };
   const ports = [...(data.ports || [])].sort((a,b) => a.number - b.number);
-  const known = ports.filter(p => p.state === "up" || p.state === "down");
+  const fieldOld = (port, field) => stale || Boolean(port.field_stale?.[field] ?? port.stale);
+  const observedAt = (port, field) => port.field_observed_at?.[field] || (field === "state" ? port.link_at : null);
+  const timeLabel = value => value ? new Date(value).toLocaleTimeString("pt-BR") : "não coletado";
+  const fieldLabel = (port, field, suffix = "") => port[field] == null ? "—" : String(port[field]) + suffix + (fieldOld(port, field) ? " (anterior)" : "");
+  const known = ports.filter(p => (p.state === "up" || p.state === "down") && !fieldOld(p, "state"));
   text("device-name", data.name);
   text("device-model", data.version);
   text("ports-count", known.length === ports.length ? known.filter(p => p.state === "up").length + " / " + ports.length : known.filter(p => p.state === "up").length + " / " + (data.expected_ports || 28) + " *");
-  text("ports-count-note", known.length === ports.length ? "Todas as portas consultadas" : known.length + " de " + (data.expected_ports || 28) + " estados de link confirmados");
+  text("ports-count-note", known.length === ports.length ? "Todos os links com leitura recente" : known.length + " de " + (data.expected_ports || 28) + " links com leitura recente");
   text("vlan-count", data.vlans === null ? "—" : data.vlans.length);
-  text("vlan-count-note", data.vlans === null ? "Lista não reconhecida" : "VLANs lidas do switch");
+  text("vlan-count-note", data.vlans === null ? "Lista não reconhecida" : (stale || data.inventory_stale ? "Inventário anterior" : "VLANs lidas do switch"));
   text("last-read", new Date(data.collected_at).toLocaleTimeString("pt-BR"));
   text("last-read-note", stale ? "Última leitura · desatualizada" : "Coleta automática em lotes");
   $("connection-state").classList.toggle("online", !stale);
   $("connection-state").querySelector("span").textContent = stale ? "Dados anteriores" : "Console consultado";
   text("physical-collection-note", (stale ? "Última leitura disponível. " : "Leitura real. ") + "Estados e detalhes têm horários próprios; dados não reconhecidos aparecem como —. " + (data.notes || []).join(" "));
-  $("ports-note").textContent = "Portas físicas: " + known.length + " de " + ports.length + " links identificados. Selecione uma porta para ver os detalhes e o horário da leitura.";
-  $("port-grid").innerHTML = ports.map(p => '<button type="button" class="port ' + (p.state === "down" ? "down" : p.state === "up" ? "" : "unknown") + '" data-real-port="' + p.number + '" title="' + escapeHtml(p.interface + " · " + (p.mode || "—") + " · PVID " + (p.pvid ?? "—")) + '"><span class="port-num">' + String(p.number).padStart(2,"0") + '</span><span class="port-state">' + (p.state || "—").toUpperCase() + '</span></button>').join("");
+  $("ports-note").textContent = "Portas físicas: " + known.length + " de " + ports.length + " links recentes. ANT. indica um estado anterior; selecione uma porta para conferir os horários de cada campo.";
+  $("port-grid").innerHTML = ports.map(p => '<button type="button" class="port ' + (fieldOld(p, "state") && p.state ? "stale" : p.state === "down" ? "down" : p.state === "up" ? "" : "unknown") + '" data-real-port="' + p.number + '" title="' + escapeHtml(p.interface + " · Link: " + fieldLabel(p, "state") + " · " + timeLabel(observedAt(p, "state")) + " · " + fieldLabel(p, "mode") + " · PVID " + fieldLabel(p, "pvid")) + '"><span class="port-num">' + String(p.number).padStart(2,"0") + '</span><span class="port-state">' + (p.state && fieldOld(p, "state") ? "ANT." : (p.state || "—").toUpperCase()) + '</span></button>').join("");
   const rows = data.vlans?.slice().sort((a,b) => a.id - b.id) ?? null;
   const vlanPortNumbers = vlan => {
-    const confirmed = [...(vlan.tagged_numbers || []), ...(vlan.untagged_numbers || []), ...(vlan.membership_from_ports || [])];
+    const confirmed = [...(vlan.effective_tagged_numbers ?? vlan.tagged_numbers ?? []), ...(vlan.effective_untagged_numbers ?? vlan.untagged_numbers ?? [])];
     const numbers = [...new Set(confirmed.map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= 28))].sort((a,b) => a-b);
     return numbers.length ? numbers.join(", ") : "—";
   };
-  $("vlan-body").innerHTML = rows === null ? '<tr><td colspan="4" class="table-empty">Lista não reconhecida; consulte Diagnóstico.</td></tr>' : rows.map(v => "<tr>" + [v.id,v.name ?? "—",vlanPortNumbers(v),v.collected_at ? "Console · " + new Date(v.collected_at).toLocaleTimeString("pt-BR") : "Inventário"].map(x=>"<td>"+escapeHtml(x)+"</td>").join("") + "</tr>").join("");
+  $("vlan-body").innerHTML = rows === null ? '<tr><td colspan="4" class="table-empty">Lista não reconhecida; consulte Diagnóstico.</td></tr>' : rows.map(v => "<tr>" + [v.id,v.name ?? "—",vlanPortNumbers(v),(stale || v.stale || v.membership_stale ? "Leitura anterior · " : "Console · ") + timeLabel(v.collected_at) + (v.membership_partial ? " · membros parciais" : "")].map(x=>"<td>"+escapeHtml(x)+"</td>").join("") + "</tr>").join("");
   const selected = Number($("physical-port-detail").dataset.port || 1);
   function detail(number) {
     const p = ports.find(p => p.number === number);
     if (!p) return;
     $("physical-port-detail").dataset.port = String(number);
-    $("physical-port-detail").textContent = p.interface + " · Link: " + (p.state || "—").toUpperCase() + " · PVID: " + (p.pvid ?? "—") + " · Modo: " + (p.mode || "—") + " · Descrição: " + (p.description || "—") + "\nTagged: " + (p.tagged || "—") + " · Untagged: " + (p.untagged || "—") + "\nEntrada: " + (p.rx_bps == null ? "—" : p.rx_bps + " bit/s") + " · Saída: " + (p.tx_bps == null ? "—" : p.tx_bps + " bit/s") + "\nDetalhes: " + (p.collected_at ? new Date(p.collected_at).toLocaleString("pt-BR") : "não coletados") + " · Link: " + (p.link_at ? new Date(p.link_at).toLocaleString("pt-BR") : "não coletado");
+    const fields = [["state", "Link"], ["pvid", "PVID"], ["mode", "Modo"], ["description", "Descrição"], ["tagged", "Tagged"], ["untagged", "Untagged"], ["rx_bps", "Entrada"], ["tx_bps", "Saída"]];
+    $("physical-port-detail").textContent = p.interface + "\n" + fields.map(([field, label]) => label + ": " + fieldLabel(p, field, field.endsWith("_bps") ? " bit/s" : "") + " · " + timeLabel(observedAt(p, field))).join("\n");
   }
   $("port-grid").querySelectorAll("[data-real-port]").forEach(button => button.addEventListener("click", () => detail(Number(button.dataset.realPort))));
   detail(selected);
@@ -143,13 +158,13 @@ function renderPhysical(data, stale = false) {
   $("switch-device-placeholder").hidden = Boolean(macs);
   $("switch-device-count").textContent = macs ? String(macs.count) : "N/D";
   $("switch-connections-note").textContent = macs
-    ? "MACs aprendidos identificados · " + new Date(macs.collected_at).toLocaleTimeString("pt-BR") + ". Não é uma contagem de pessoas nem prova de link ativo."
+    ? (stale || macs.stale ? "Tabela MAC anterior · " : "MACs aprendidos identificados · ") + new Date(macs.collected_at).toLocaleTimeString("pt-BR") + ". Não é uma contagem de pessoas nem prova de link ativo."
     : "Tabela MAC ainda indisponível ou não reconhecida neste firmware.";
   macList.innerHTML = macs ? (macs.entries.length ? '<div class="table-wrap"><table><thead><tr><th>MAC</th><th>VLAN</th><th>Porta</th></tr></thead><tbody>' + [...macs.entries].sort((a,b) => a.port-b.port || a.vlan-b.vlan || a.mac.localeCompare(b.mac)).slice(0,100).map(r => "<tr>" + [r.mac,r.vlan,r.port].map(v=>"<td>"+escapeHtml(v)+"</td>").join("") + "</tr>").join("") + '</tbody></table></div>' : '<div class="empty-inline">Nenhum MAC aprendido na leitura.</div>') : "";
   if (macs && macs.entries.length > 100) macList.insertAdjacentHTML("beforeend", '<p class="panel-note">Exibindo as primeiras 100 entradas reconhecidas.</p>');
   const traffic = ports.filter(p => p.rx_bps != null || p.tx_bps != null);
   $("traffic-placeholder").hidden = traffic.length > 0;
-  $("physical-traffic").innerHTML = traffic.length ? '<p class="panel-note">Amostras do próprio switch; cada porta tem seu horário de coleta.</p><div class="table-wrap"><table><thead><tr><th>Porta</th><th>Entrada (bit/s)</th><th>Saída (bit/s)</th><th>Coleta</th></tr></thead><tbody>' + traffic.map(p=>"<tr>" + [p.number,p.rx_bps ?? "—",p.tx_bps ?? "—",new Date(p.collected_at).toLocaleTimeString("pt-BR")].map(v=>"<td>"+escapeHtml(v)+"</td>").join("") + "</tr>").join("") + '</tbody></table></div>' : "";
+  $("physical-traffic").innerHTML = traffic.length ? '<p class="panel-note">Amostras do próprio switch; cada porta tem seu horário de coleta.</p><div class="table-wrap"><table><thead><tr><th>Porta</th><th>Entrada (bit/s)</th><th>Saída (bit/s)</th><th>Coleta</th></tr></thead><tbody>' + traffic.map(p=>"<tr>" + [p.number,fieldLabel(p, "rx_bps"),fieldLabel(p, "tx_bps"),"Entrada: " + timeLabel(observedAt(p, "rx_bps")) + " · Saída: " + timeLabel(observedAt(p, "tx_bps"))].map(v=>"<td>"+escapeHtml(v)+"</td>").join("") + "</tr>").join("") + '</tbody></table></div>' : "";
   const cards = $("system-page").querySelectorAll(".system-detail-card");
   cards[0].querySelector("h2").textContent = data.model;
   cards[0].querySelectorAll("dd")[1].textContent = data.version;
@@ -163,6 +178,7 @@ function renderPhysical(data, stale = false) {
 let physicalCacheBusy = false;
 let lastPhysicalRenderKey = "";
 let lastPhysicalOutputKey = "";
+let lastPhysicalSnapshot = null;
 
 async function loadPhysicalCache() {
   if (appStatus.mode !== "serial" || physicalCacheBusy) return;
@@ -188,14 +204,15 @@ async function loadPhysicalCache() {
       status.title = monitor.message || "";
     }
     if (result.snapshot) {
-      const key = result.snapshot.collected_at + "|" + stale;
+      lastPhysicalSnapshot = result.snapshot;
+      const key = JSON.stringify(result.snapshot) + "|" + stale;
       if (key !== lastPhysicalRenderKey) {
         renderPhysical(result.snapshot, stale);
         lastPhysicalRenderKey = key;
       }
     }
     if (result.outputs?.length) {
-      const key = result.outputs.map(o => o.command + o.output.length).join("|");
+      const key = JSON.stringify(result.outputs);
       if (key !== lastPhysicalOutputKey) {
         showOutputs(result.outputs);
         lastPhysicalOutputKey = key;
@@ -212,6 +229,11 @@ async function loadPhysicalCache() {
       $("physical-collection-note").textContent = "Monitoramento pausado: encerre a sessão CLI para liberar a porta serial." + last;
     }
   } catch (error) {
+    if (lastPhysicalSnapshot) renderPhysical(lastPhysicalSnapshot, true);
+    lastPhysicalRenderKey = "";
+    $("connection-state").classList.remove("online");
+    $("connection-state").querySelector("span").textContent = "Sem comunicação · dados anteriores";
+    $("last-read-note").textContent = "Última leitura · sem comunicação";
     $("physical-collection-note").textContent = "Monitoramento sem acesso ao servidor: " + error.message + ". Últimos dados preservados.";
     const status = $("live-status");
     if (status) status.textContent = "! Conexão com servidor indisponível";
@@ -393,10 +415,16 @@ async function loadConfigurationStatus() {
   banner.textContent = configStatus.message;
   banner.classList.toggle("ready", configStatus.writes_enabled);
   banner.classList.toggle("locked", !configStatus.writes_enabled);
-  $("backup-button").disabled = !configStatus.available;
-  $("save-config-button").disabled = !configStatus.available;
+  updateConfigurationControls();
+}
+
+function updateConfigurationControls() {
+  $("backup-button").disabled = configApplying || !configStatus.available;
+  $("save-config-button").disabled = configApplying || !configStatus.available;
   for (const id of ["vlan-form", "port-form", "system-form", "route-form"]) {
-    $(id).querySelector('button[type="submit"]').disabled = !configStatus.available;
+    const form = $(id);
+    form.querySelector('button[type="submit"]').disabled = configApplying || !configStatus.available;
+    form.querySelectorAll("input, select").forEach(field => { field.disabled = configApplying; });
   }
   updateApplyAvailability();
 }
@@ -434,6 +462,9 @@ function showConfigFeedback(message, error = false, source = null) {
 }
 
 async function previewConfiguration(payload, source = null) {
+  if (configApplying) return;
+  const revision = ++configPreviewRevision;
+  configPreviewBusy = true;
   pendingConfigPreview = null;
   showConfigFeedback("Gerando prévia…", false, source);
   updateApplyAvailability();
@@ -445,6 +476,7 @@ async function previewConfiguration(payload, source = null) {
       body: JSON.stringify(payload), cache: "no-store",
     });
     const result = await response.json();
+    if (revision !== configPreviewRevision || configApplying) return;
     if (!response.ok || !result.ok) throw new Error(result.error || "Não foi possível criar a prévia.");
     pendingConfigPreview = result;
     $("preview-summary").textContent = result.summary;
@@ -458,14 +490,21 @@ async function previewConfiguration(payload, source = null) {
     $("config-preview").scrollIntoView({ behavior: "smooth", block: "start" });
     updateApplyAvailability();
   } catch (error) {
+    if (revision !== configPreviewRevision || configApplying) return;
     $("config-result").classList.add("error");
     $("config-result").textContent = error.message;
     showConfigFeedback(error.message, true, source);
+  } finally {
+    if (revision === configPreviewRevision) {
+      configPreviewBusy = false;
+      updateApplyAvailability();
+    }
   }
 }
 
 $("vlan-form").addEventListener("submit", event => {
   event.preventDefault();
+  if (configApplying) return;
   const data = Object.fromEntries(new FormData(event.currentTarget));
   data.vlan_id = Number(data.vlan_id);
   previewConfiguration(data, event.currentTarget);
@@ -473,6 +512,7 @@ $("vlan-form").addEventListener("submit", event => {
 
 $("port-form").addEventListener("submit", event => {
   event.preventDefault();
+  if (configApplying) return;
   try {
     const data = Object.fromEntries(new FormData(event.currentTarget));
     data.port = Number(data.port);
@@ -491,6 +531,8 @@ $("port-form").addEventListener("submit", event => {
     $("config-result").classList.add("error");
     $("config-result").textContent = error.message;
     $("config-preview").hidden = true;
+    ++configPreviewRevision;
+    configPreviewBusy = false;
     pendingConfigPreview = null;
     updateApplyAvailability();
     showConfigFeedback(error.message, true, event.currentTarget);
@@ -499,6 +541,7 @@ $("port-form").addEventListener("submit", event => {
 
 $("system-form").addEventListener("submit", event => {
   event.preventDefault();
+  if (configApplying) return;
   const data = Object.fromEntries(new FormData(event.currentTarget));
   if (data.action === "set_management_ip") {
     data.vlan_id = Number(data.vlan_id);
@@ -509,6 +552,7 @@ $("system-form").addEventListener("submit", event => {
 
 $("route-form").addEventListener("submit", event => {
   event.preventDefault();
+  if (configApplying) return;
   const data = Object.fromEntries(new FormData(event.currentTarget));
   data.prefix = Number(data.prefix);
   previewConfiguration(data, event.currentTarget);
@@ -517,6 +561,7 @@ $("route-form").addEventListener("submit", event => {
 $("save-config-button").addEventListener("click", event => previewConfiguration({ action: "save" }, event.currentTarget));
 
 $("backup-button").addEventListener("click", async () => {
+  if (configApplying) return;
   const resultBox = $("config-result");
   resultBox.classList.remove("error");
   resultBox.textContent = "";
@@ -545,8 +590,12 @@ function updateApplyAvailability() {
   if (!$("apply-config-button")) return;
   const button = $("apply-config-button");
   const hint = $("apply-hint");
-  button.disabled = !configStatus.writes_enabled || !pendingConfigPreview;
-  if (!configStatus.writes_enabled) {
+  button.disabled = configApplying || configPreviewBusy || !configStatus.writes_enabled || !pendingConfigPreview;
+  if (configApplying) {
+    hint.textContent = "Aplicação em andamento. Aguarde o resultado antes de iniciar outra operação.";
+  } else if (configPreviewBusy) {
+    hint.textContent = "Aguardando a prévia mais recente.";
+  } else if (!configStatus.writes_enabled) {
     hint.textContent = configStatus.message || "O envio de alterações está desabilitado na configuração local.";
   } else if (!pendingConfigPreview) {
     hint.textContent = "Gere uma prévia; depois o botão Aplicar fica disponível.";
@@ -557,7 +606,10 @@ function updateApplyAvailability() {
 }
 
 $("apply-config-button").addEventListener("click", async () => {
-  if (!pendingConfigPreview || !configStatus.writes_enabled) return;
+  if (configApplying || configPreviewBusy || !pendingConfigPreview || !configStatus.writes_enabled) return;
+  configApplying = true;
+  ++configPreviewRevision;
+  updateConfigurationControls();
   const applyButton = $("apply-config-button");
   const previewToApply = pendingConfigPreview;
   pendingConfigPreview = null;
@@ -589,8 +641,9 @@ $("apply-config-button").addEventListener("click", async () => {
     resultBox.textContent = error.message;
     showConfigFeedback(error.message, true);
   } finally {
+    configApplying = false;
     applyButton.textContent = "Aplicar no switch";
-    updateApplyAvailability();
+    updateConfigurationControls();
   }
 });
 
@@ -598,13 +651,14 @@ let cliAvailable = false;
 function setCliConnected(connected, note = "") {
   cliConnected = connected;
   if (connected) cliOccupiedElsewhere = false;
-  $("cli-state").textContent = connected ? (appStatus.mode === "virtual" ? "Conectado · virtual" : "Conectado · serial") : "Desconectado";
-  $("cli-state").classList.toggle("cli-online", connected);
-  $("cli-open").disabled = connected || cliOccupiedElsewhere || !cliAvailable || !["serial","virtual"].includes(appStatus.mode);
-  $("cli-close").disabled = !connected;
-  $("cli-command").disabled = !connected;
-  $("cli-enter").disabled = !connected;
-  $("cli-send").disabled = !connected;
+  const usable = connected && cliAvailable && !cliStateUncertain && !cliClosing && !cliOpening && !cliSending;
+  $("cli-state").textContent = cliClosing ? "Encerrando…" : cliOpening ? "Conectando…" : cliSending ? "Aguardando resposta…" : cliStateUncertain ? "Estado a confirmar" : connected ? (appStatus.mode === "virtual" ? "Conectado · virtual" : "Conectado · serial") : "Desconectado";
+  $("cli-state").classList.toggle("cli-online", usable);
+  $("cli-open").disabled = cliOpening || cliSending || cliClosing || Boolean(cliToken) || connected || cliOccupiedElsewhere || !cliAvailable || !["serial","virtual"].includes(appStatus.mode);
+  $("cli-close").disabled = !cliToken || cliClosing || cliOpening || cliSending;
+  $("cli-command").disabled = !usable;
+  $("cli-enter").disabled = !usable;
+  $("cli-send").disabled = !usable;
   if (note) $("cli-connection-note").textContent = note;
 }
 
@@ -630,32 +684,54 @@ function appendCliOutput(text, command = "") {
   cliSensitivePrompt = /password|passwd|secret/i.test(text);
 }
 
+function forgetCliToken() {
+  ++cliStateRevision;
+  cliToken = "";
+  sessionStorage.removeItem("qm_cli_token");
+  cliStateUncertain = false;
+}
+
 async function loadCliStatus() {
+  if (cliStatusTimer) window.clearTimeout(cliStatusTimer);
+  cliStatusTimer = null;
+  const requestRevision = ++cliStatusRevision;
+  const stateRevision = cliStateRevision;
+  const tokenAtRequest = cliToken;
+  const isCurrent = () => requestRevision === cliStatusRevision && stateRevision === cliStateRevision && tokenAtRequest === cliToken && !cliOpening && !cliClosing && !cliSending;
   try {
-    const response = await fetch("/api/cli/status", { cache: "no-store" });
+    const response = await fetch("/api/cli/status", { cache: "no-store", signal: AbortSignal.timeout(5000), headers: cliToken ? {"X-CLI-Token": cliToken} : {} });
+    if (!response.ok) throw new Error("Estado do console indisponível.");
     const status = await response.json();
+    if (!isCurrent()) return;
     cliAvailable = Boolean(status.available);
-    if (!["serial","virtual"].includes(status.mode) || !status.available) {
-      sessionStorage.removeItem("qm_cli_token");
-      cliToken = "";
-      setCliConnected(false, status.mode === "serial" ? status.message : "Configure QM_MODE=serial e QM_ENABLE_CLI=true somente se precisar do terminal direto.");
-    } else if (status.connected && cliToken) {
-      setCliConnected(true, "Sessão serial recuperada nesta aba. Envie somente comandos destinados a este Quidway.");
-    } else if (status.connected) {
-      cliOccupiedElsewhere = true;
-      setCliConnected(false, "Já existe uma sessão serial ativa em outra aba. Volte à aba original e encerre a sessão primeiro.");
-    } else {
+    if (status.busy || status.token_valid === null) {
+      cliStateUncertain = Boolean(cliToken);
+      setCliConnected(false, "Console ocupado. Aguardando confirmação do estado; o acesso desta aba foi preservado.");
+      if (cliToken) cliStatusTimer = window.setTimeout(loadCliStatus, 1500);
+    } else if (!status.connected) {
+      forgetCliToken();
       cliOccupiedElsewhere = false;
-      sessionStorage.removeItem("qm_cli_token");
-      cliToken = "";
-      setCliConnected(false, status.mode === "virtual" ? "Console virtual disponível. Nenhum cabo necessário." : "Console serial configurado. Feche MobaXterm/Tera Term e conecte quando estiver pronto.");
+      setCliConnected(false, status.available ? (status.mode === "virtual" ? "Console virtual disponível. Nenhum cabo necessário." : "Console serial configurado. Feche outros terminais antes de conectar.") : status.message);
+    } else if (cliToken && status.token_valid === true) {
+      cliStateUncertain = false;
+      setCliConnected(true, "Sessão recuperada nesta aba. Envie somente comandos destinados a este Quidway.");
+    } else {
+      if (status.token_valid === false) forgetCliToken();
+      cliOccupiedElsewhere = true;
+      setCliConnected(false, "Já existe uma sessão ativa em outra aba. Encerre-a na aba original.");
     }
   } catch {
-    setCliConnected(false, "Não foi possível consultar o serviço local.");
+    if (!isCurrent()) return;
+    cliStateUncertain = Boolean(cliToken);
+    setCliConnected(false, "Não foi possível confirmar o estado. O acesso desta aba foi preservado; tente Encerrar novamente.");
   }
 }
 
 $("cli-open").addEventListener("click", async () => {
+  if (cliOpening || cliClosing || cliSending || cliToken || cliConnected || cliOccupiedElsewhere || !cliAvailable) return;
+  cliOpening = true;
+  ++cliStateRevision;
+  setCliConnected(cliConnected);
   const button = $("cli-open");
   button.disabled = true;
   button.textContent = "Conectando…";
@@ -664,7 +740,9 @@ $("cli-open").addEventListener("click", async () => {
     const response = await fetch("/api/cli/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", cache: "no-store" });
     const result = await response.json();
     if (!response.ok || !result.ok) throw new Error(result.error || "Não foi possível abrir o console serial.");
+    ++cliStateRevision;
     cliToken = result.token;
+    cliStateUncertain = false;
     sessionStorage.setItem("qm_cli_token", cliToken);
     appendCliOutput(result.output, "");
     setCliConnected(true, `Conectado a ${result.port} · ${result.baud_rate} baud. Se aparecer Username/Password, digite um valor por linha.`);
@@ -674,33 +752,53 @@ $("cli-open").addEventListener("click", async () => {
     $("cli-result").textContent = error.message;
     setCliConnected(false);
   } finally {
+    cliOpening = false;
+    ++cliStateRevision;
     button.textContent = "Conectar ao console";
+    setCliConnected(cliConnected);
   }
 });
 
-$("cli-close").addEventListener("click", async () => {
-  if (!cliToken) return;
+async function closeCli({keepalive = false} = {}) {
+  if (!cliToken || cliClosing) return false;
+  const tokenToClose = cliToken;
+  cliClosing = true;
+  ++cliStateRevision;
+  setCliConnected(cliConnected);
   try {
-    const response = await fetch("/api/cli/close", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: cliToken }), cache: "no-store" });
+    const response = await fetch("/api/cli/close", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: tokenToClose }), cache: "no-store", keepalive, signal: AbortSignal.timeout(8000) });
     const result = await response.json();
     if (!response.ok || !result.ok) throw new Error(result.error || "Não foi possível encerrar a sessão.");
+    if (cliToken === tokenToClose) {
+      forgetCliToken();
+      setCliConnected(false);
+    }
+    $("cli-result").classList.remove("error");
     $("cli-result").textContent = result.message;
+    return true;
   } catch (error) {
+    cliStateUncertain = true;
     $("cli-result").classList.add("error");
-    $("cli-result").textContent = error.message;
+    $("cli-result").textContent = error.message + " O encerramento não foi confirmado; tente Encerrar novamente.";
+    return false;
   } finally {
-    cliToken = "";
-    sessionStorage.removeItem("qm_cli_token");
-    setCliConnected(false);
+    cliClosing = false;
+    ++cliStateRevision;
+    setCliConnected(cliConnected);
   }
-});
+}
+
+$("cli-close").addEventListener("click", () => closeCli());
 
 $("cli-command-form").addEventListener("submit", async event => {
   event.preventDefault();
-  if (!cliConnected || !cliToken) return;
+  if (!cliConnected || !cliToken || cliStateUncertain || cliClosing || cliOpening || cliSending) return;
   const typed = $("cli-command").value.trim();
   if (!typed) return;
   const command = typed === "<ENTER>" ? "" : typed;
+  cliSending = true;
+  ++cliStateRevision;
+  setCliConnected(cliConnected);
   const sendButton = $("cli-send");
   sendButton.disabled = true;
   sendButton.textContent = "Aguardando…";
@@ -718,19 +816,20 @@ $("cli-command-form").addEventListener("submit", async event => {
     $("cli-result").classList.add("error");
     $("cli-result").textContent = error.message;
     if (/sessão expirou|encerrada|falhou/i.test(error.message)) {
-      cliToken = "";
-      sessionStorage.removeItem("qm_cli_token");
+      forgetCliToken();
       setCliConnected(false);
     }
   } finally {
+    cliSending = false;
+    ++cliStateRevision;
     sendButton.textContent = "Enviar";
-    sendButton.disabled = !cliConnected;
+    setCliConnected(cliConnected);
     $("cli-command").focus();
   }
 });
 
 $("cli-enter").addEventListener("click", () => {
-  if (!cliConnected) return;
+  if (!cliConnected || cliSending || cliOpening || cliClosing || cliStateUncertain) return;
   $("cli-command").value = "<ENTER>";
   $("cli-command-form").requestSubmit();
 });
@@ -738,6 +837,7 @@ $("cli-enter").addEventListener("click", () => {
 $("cli-command").addEventListener("keydown", event => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
+    if (cliSending || cliOpening || cliClosing || cliStateUncertain) return;
     $("cli-command-form").requestSubmit();
   }
 });
@@ -748,8 +848,10 @@ $("cli-clear").addEventListener("click", () => {
 });
 
 window.addEventListener("pagehide", () => {
-  if (cliToken) {
-    fetch("/api/cli/close", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: cliToken }), keepalive: true });
-    sessionStorage.removeItem("qm_cli_token");
-  }
+  // A missing reply leaves the token available for recovery on the next page.
+  if (cliStatusTimer) window.clearTimeout(cliStatusTimer);
+  if (cliToken) closeCli({keepalive: true});
+});
+window.addEventListener("pageshow", () => {
+  if (appStatus.mode !== "demo" && (pageKind === "cli" || cliToken)) loadCliStatus();
 });
