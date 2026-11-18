@@ -602,9 +602,18 @@ class PhysicalDashboard:
                     publish()
                     refresh_inventory(connection)
                     publish()
-                    # The lab VLAN is verified independently of the inventory,
-                    # whose legacy response can be truncated or malformed.
-                    refresh_vlan_detail(connection, 12)
+                    # S3000: consulta uma VLAN confirmada no inventario.
+                    # S3900: preserva a verificacao independente da VLAN 12.
+                    if self.perfil == "s3000":
+                        ids = sorted(v["id"] for v in data.get("vlans") or [])
+
+                        if ids:
+                            vlan = ids[self.vlan_cursor % len(ids)]
+                            self.vlan_cursor += 1
+                            refresh_vlan_detail(connection, vlan)
+                    else:
+                        refresh_vlan_detail(connection, 12)
+
                     publish()
                 elif self.dirty:
                     refresh_inventory(connection)
@@ -640,8 +649,16 @@ class PhysicalDashboard:
                              7: 3, 9: 1, 10: 2, 11: 3}[stage]
                         refresh_port(connection, n)
                     elif stage == 4:
-                        # Periodic independent check of the lab VLAN.
-                        refresh_vlan_detail(connection, 12)
+                        if self.perfil == "s3000":
+                            ids = sorted(v["id"] for v in data.get("vlans") or [])
+
+                            if ids:
+                                vlan = ids[self.vlan_cursor % len(ids)]
+                                self.vlan_cursor += 1
+                                refresh_vlan_detail(connection, vlan)
+                        else:
+                            # Mantem o comportamento existente do S3900.
+                            refresh_vlan_detail(connection, 12)
                     elif stage == 8:
                         quantidade_restante = self.total_portas - 3
 
