@@ -11,6 +11,7 @@ from serial_readonly import (SerialReadOnlyError, _read_until_prompt, _clean_out
 from serial_config import _parse_vlan_inventory
 from switch_config import ConfigurationError
 from switch_text import command_rejected
+from switch_detector import identificar_switch
 
 INTERVAL = 4
 PORT_BATCH = 3
@@ -21,8 +22,21 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def interface_name(n):
-    return f"Ethernet1/0/{n}" if n <= 24 else f"GigabitEthernet1/1/{n - 24}"
+def interface_name(n, perfil="s3900"):
+
+    if perfil == "s3000":
+        if 1 <= n <= 24:
+            return f"Ethernet0/{n}"
+        raise ValueError("Porta inexistente no perfil S3026C")
+
+    if perfil == "s3900":
+        if 1 <= n <= 24:
+            return f"Ethernet1/0/{n}"
+        if 25 <= n <= 28:
+            return f"GigabitEthernet1/1/{n - 24}"
+        raise ValueError("Porta inexistente no perfil S3900-SI")
+
+    raise ValueError("Perfil de switch desconhecido")
 
 
 def terminal_text(text):
@@ -36,19 +50,43 @@ def _field(text, pattern):
 
 def parse_identity(text):
     text = terminal_text(text)
-    model = _field(text, r"\b(Quidway[ \t]+3900-SI[ \t]+28-Port)\b")
-    version = _field(text, r"\b(Version[ \t]+3\.10\(CN\),[ \t]+RELEASE[ \t]+0002)\b")
-    if not model or not version:
-        raise SerialReadOnlyError("Identificação do S3900 incompleta ou incompatível; não vou atribuir dados a outro modelo.")
-    return {"model": model, "version": version,
-            "hardware": _field(text, r"^[ \t]*Hardware Version is[ \t]+([^\n]+)"),
-            "cpld": _field(text, r"^[ \t]*CPLD Version is[ \t]+([^\n]+)"),
-            "bootrom": _field(text, r"^[ \t]*Bootrom Version is[ \t]+([^\n]+)")}
 
+    identificacao = identificar_switch(text)
 
-def parse_port(text, number):
+    if identificacao["perfil"] == "desconhecido":
+        raise SerialReadOnlyError(
+            "Modelo do switch não reconhecido. "
+            "Nenhuma configuração será executada."
+        )
+
+    if not identificacao["versao"] or not identificacao["release"]:
+        raise SerialReadOnlyError(
+            "Não foi possível identificar completamente o firmware."
+        )
+
+    return {
+        "model": identificacao["modelo"],
+        "series": identificacao["serie"],
+        "version": identificacao["versao"],
+        "release": identificacao["release"],
+        "profile": identificacao["perfil"],
+        "hardware": _field(
+            text,
+            r"^[ \t]*Hardware Version is[ \t]+([^\n]+)"
+        ),
+        "cpld": _field(
+            text,
+            r"^[ \t]*CPLD Version is[ \t]+([^\n]+)"
+        ),
+        "bootrom": _field(
+            text,
+            r"^[ \t]*Bootrom Version is[ \t]+([^\n]+)"
+        ),
+    }
+
+def parse_port(text, number, perfil="s3900"):
     text = terminal_text(text)
-    interface = interface_name(number)
+    interface = interface_name(number, perfil)
     link = _field(text, rf"^[ \t]*{re.escape(interface)}[ \t]+(?:current[ \t]+state[ \t]*:|is)[ \t]*(UP|DOWN|Administratively[ \t]+DOWN)\b")
     pvid = _field(text, r"\bPVID[ \t]*:[ \t]*(\d{1,4})\b")
     mode = _field(text, r"\bPort[ \t]+link-type[ \t]*:[ \t]*(access|trunk|hybrid)\b")
@@ -69,28 +107,66 @@ def parse_port(text, number):
             "tx_bps": int(tx)*8 if tx is not None else None, "collected_at": now()}
 
 
-def parse_brief(text):
-    """Accept only full, recognized interface IDs and explicit state columns."""
+def parse_brief(text, perfil="s3900"):
+    """Interpreta o estado das portas conforme o modelo."""
+
     result = {}
-    for n in range(1, 29):
-        interface = interface_name(n)
-        m = re.search(rf"(?mi)^[ \t]*{re.escape(interface)}[ \t]+(UP|DOWN|ADM|ADMIN[ \t]+DOWN)\b", terminal_text(text))
+
+    quantidade = {
+        "s3000": 24,
+        "s3900": 28
+    }
+
+    if perfil not in quantidade:
+        raise ValueError("Perfil de switch desconhecido")
+
+    total = quantidade[perfil]
+
+    for n in range(1, total + 1):
+
+        interface = interface_name(n, perfil)
+
+        m = re.search(
+            rf"(?mi)^[ \t]*{re.escape(interface)}"
+            rf"[ \t]+(UP|DOWN|ADM|ADMIN[ \t]+DOWN)\b",
+            terminal_text(text)
+        )
+
         if m:
-            result[n] = {"state": "up" if m[1].lower() == "up" else "down",
-                         "admin": False if m[1].lower().startswith("adm") else None,
-                         "link_at": now()}
+            result[n] = {
+                "state": "up" if m[1].lower() == "up" else "down",
+                "admin": (
+                    False
+                    if m[1].lower().startswith("adm")
+                    else None
+                ),
+                "link_at": now()
+            }
+
     return result
 
 
-def _vlan_member_sections(text):
+def _vlan_member_sections(text, perfil="s3900"):
     """Parse VRP multiline VLAN member lists, without guessing damaged port IDs."""
     recognized = {}
     partial = False
     current = None
-    entry = re.compile(
-        r"(?i)\b(?:Ethernet1/0/(?:[1-9]|1[0-9]|2[0-4])|"
-        r"GigabitEthernet1/1/[1-4])\b"
+
+    padroes = {
+    "s3000": r"Ethernet0/(?:[1-9]|1[0-9]|2[0-4])",
+    "s3900": (
+        r"(?:Ethernet1/0/(?:[1-9]|1[0-9]|2[0-4])|"
+        r"GigabitEthernet1/1/[1-4])"
     )
+}
+
+    if perfil not in padroes:
+        raise ValueError("Perfil de switch desconhecido")
+
+    entry = re.compile(
+        rf"(?i)\b(?:{padroes[perfil]})\b"
+    )
+
     header = re.compile(r"(?i)^[ \t]*(Tagged|Untagged)[ \t]+Ports[ \t]*:[ \t]*(.*)$")
     for raw in terminal_text(text).splitlines():
         match = header.match(raw)
@@ -133,13 +209,13 @@ def _members_label(tagged, untagged, *, partial=False):
     return "; ".join(labels) + (" (leitura parcial)" if partial else "")
 
 
-def parse_vlan_detail(text, vlan):
+def parse_vlan_detail(text, vlan, perfil="s3900"):
     text = terminal_text(text)
     actual = _field(text, r"^[ \t]*VLAN[ \t]+ID[ \t]*:[ \t]*(\d{1,4})\b")
     if actual is None or int(actual) != vlan:
         return None
     name = _field(text, r"^[ \t]*(?:VLAN[ \t]+)?Description[ \t]*:[ \t]*([^\n]+)")
-    sections, partial = _vlan_member_sections(text)
+    sections, partial = _vlan_member_sections(text, perfil)
     tagged = sections.get("tagged", {}).get("ports", set())
     untagged = sections.get("untagged", {}).get("ports", set())
     both_present = "tagged" in sections and "untagged" in sections
@@ -181,29 +257,124 @@ def reconcile_vlan_members(data):
             row["members"] = "Nenhuma" if not partial else None
 
 
-def parse_mac_table(text):
-    """Recognize legacy learned-MAC rows; never guess from arbitrary text."""
+def parse_mac_table(text, perfil="s3900"):
+    """Interpreta a tabela MAC conforme o perfil do switch."""
+
     text = terminal_text(text)
+
+    quantidades = {
+        "s3000": 24,
+        "s3900": 28
+    }
+
+    if perfil not in quantidades:
+        raise ValueError("Perfil de switch desconhecido")
+
+    # Mapeia apenas as interfaces do equipamento identificado
+    interfaces = {
+        interface_name(n, perfil).lower(): n
+        for n in range(1, quantidades[perfil] + 1)
+    }
+
+    # Reconhece os formatos de MAC utilizados pelo parser original
     pattern = re.compile(
-        r"(?mi)^[ \t]*([0-9a-f]{4}(?:-[0-9a-f]{4}){2}|[0-9a-f]{2}(?::[0-9a-f]{2}){5})"
-        r"[ \t]+([0-9]{1,4})[ \t]+(?:learned|dynamic)[ \t]+"
-        r"((?:GigabitEthernet|Ethernet)1/[01]/[0-9]{1,2})\b"
+        r"(?mi)^[ \t]*"
+        r"([0-9a-f]{4}(?:-[0-9a-f]{4}){2}|"
+        r"[0-9a-f]{2}(?::[0-9a-f]{2}){5})"
+        r"[ \t]+([0-9]{1,4})"
+        r"[ \t]+(?:learned|dynamic)"
+        r"[ \t]+((?:GigabitEthernet|Ethernet)"
+        r"(?:0/[0-9]{1,2}|1/[01]/[0-9]{1,2}))\b"
     )
+
     rows = []
-    interfaces = {interface_name(n).lower(): n for n in range(1, 29)}
+
     for m in pattern.finditer(text):
-        port = interfaces.get(m[3].lower())
+
+        porta = interfaces.get(m[3].lower())
         vlan = int(m[2])
-        if port is None or not 1 <= vlan <= 4094:
+
+        if porta is None or not 1 <= vlan <= 4094:
             continue
+
         mac = re.sub(r"[:-]", "", m[1]).lower()
-        mac = ":".join(mac[i:i+2] for i in range(0,12,2))
-        rows.append({"mac": mac, "vlan": vlan, "port": port})
+        mac = ":".join(
+            mac[i:i + 2]
+            for i in range(0, 12, 2)
+        )
+
+        rows.append({
+            "mac": mac,
+            "vlan": vlan,
+            "port": porta
+        })
+
     if rows:
-        return {"entries": rows, "count": len({r["mac"] for r in rows}), "collected_at": now()}
-    if re.search(r"(?mi)^[ \t]*(?:Total(?:[ \t]+MAC[ \t]+addresses?|[ \t]+items?|[ \t]+entries)?[ \t]*:[ \t]*0|No[ \t]+MAC[ \t]+address(?:es)?(?:[ \t]+found)?)[.!]?[ \t]*$", text):
-        return {"entries": [], "count": 0, "collected_at": now()}
+        return {
+            "entries": rows,
+            "count": len({r["mac"] for r in rows}),
+            "collected_at": now()
+        }
+
+    if re.search(
+        r"(?mi)^[ \t]*(?:Total(?:[ \t]+MAC[ \t]+addresses?|"
+        r"[ \t]+items?|[ \t]+entries)?[ \t]*:[ \t]*0|"
+        r"No[ \t]+MAC[ \t]+address(?:es)?(?:[ \t]+found)?)"
+        r"[.!]?[ \t]*$",
+        text
+    ):
+        return {
+            "entries": [],
+            "count": 0,
+            "collected_at": now()
+        }
+
     return None
+
+def criar_portas(perfil):
+    """Cria o inventario conforme o modelo identificado."""
+
+    quantidades = {
+        "s3000": 24,
+        "s3900": 28
+    }
+
+    if perfil not in quantidades:
+        raise ValueError("Perfil de switch desconhecido")
+
+    portas = []
+
+    for n in range(1, quantidades[perfil] + 1):
+        porta = {
+            "number": n,
+            "interface": interface_name(n, perfil),
+            "state": None,
+            "admin": None,
+            "pvid": None,
+            "mode": None,
+            "description": None,
+            "tagged": None,
+            "untagged": None,
+            "rx_bps": None,
+            "tx_bps": None,
+            "collected_at": None
+        }
+
+        portas.append(porta)
+
+    return portas
+
+
+def identidade_equipamento(identity):
+    """Gera uma assinatura baseada nos dados identificados."""
+
+    return (
+        identity.get("model"),
+        identity.get("version"),
+        identity.get("release"),
+        identity.get("profile")
+    )
+
 
 
 class PhysicalDashboard:
@@ -212,6 +383,10 @@ class PhysicalDashboard:
         self.reset()
 
     def reset(self):
+        self.identidade_atual = None
+        self.ultima_verificacao_identidade = 0.0
+        self.perfil = None
+        self.total_portas = 0
         self.data = None
         self.outputs = []
         self.last_attempt = 0.0
@@ -227,6 +402,22 @@ class PhysicalDashboard:
         self.dirty = True
         self.error = None
 
+    def configurar_perfil(self, identificacao):
+        perfis = {
+            "s3000": 24,
+            "s3900": 28
+        }
+
+        perfil = identificacao.get("profile")
+
+        if perfil not in perfis:
+            raise SerialReadOnlyError(
+                "Perfil do switch não suportado."
+            )
+
+        self.perfil = perfil
+        self.total_portas = perfis[perfil]
+
     def invalidate(self, plan=None):
         self.dirty = True
         self.last_attempt = 0.0
@@ -236,7 +427,7 @@ class PhysicalDashboard:
             self.vlan_cursor = 0
             return
         for command in plan.commands:
-            for n in range(1, 29):
+            for n in range(1, self.total_portas + 1):
                 if command.lower() == ("interface " + interface_name(n)).lower():
                     self.priority_ports.add(n)
                     break
@@ -267,14 +458,8 @@ class PhysicalDashboard:
         self.error = None
         outputs = []
         data = copy.deepcopy(self.data) if self.data else {
-            "ports": [
-                {"number": n, "interface": interface_name(n), "state": None,
-                 "admin": None, "pvid": None, "mode": None, "description": None,
-                 "tagged": None, "untagged": None, "rx_bps": None,
-                 "tx_bps": None, "collected_at": None}
-                for n in range(1, 29)
-            ],
-            "vlans": None,
+            "ports": [],
+            "vlans": None,   
         }
         notes = []
         active_command = "conexão serial"
@@ -332,8 +517,8 @@ class PhysicalDashboard:
                         row["note"] = "Consulta individual anterior · ausente no inventário"
 
         def refresh_port(connection, n):
-            output = query(connection, "display interface " + interface_name(n))
-            new = parse_port(output or "", n)
+            output = query(connection, "display interface " + interface_name(n, self.perfil))
+            new = parse_port(output or "", n, self.perfil)
             if not new:
                 notes.append(f"Porta {n}: resposta não reconhecida; leitura anterior preservada.")
                 return
@@ -350,7 +535,7 @@ class PhysicalDashboard:
         def refresh_vlan_detail(connection, vlan):
             # Do not infer that a VLAN exists merely from a port PVID, a MAC,
             # a cached inventory number or its previous existence.
-            new = parse_vlan_detail(query(connection, f"display vlan {vlan}") or "", vlan)
+            new = parse_vlan_detail(query(connection, f"display vlan {vlan}") or "", vlan, self.perfil)
             if not new:
                 notes.append(f"VLAN {vlan}: consulta individual não confirmada.")
                 return False
@@ -375,8 +560,43 @@ class PhysicalDashboard:
                 remaining = max(1, min(settings.timeout_seconds, 10, deadline - time.monotonic()))
                 _read_until_prompt(connection, remaining)
 
+                # Verifica periodicamente se o equipamento foi trocado
+                if self.data is not None:
+
+                    tempo_atual = time.monotonic()
+
+                    if (
+                        self.identidade_atual is None
+                        or tempo_atual - self.ultima_verificacao_identidade >= 60
+                    ):
+
+                        nova_identity = parse_identity(
+                            query(connection, "display version") or ""
+                        )
+
+                        nova_assinatura = identidade_equipamento(
+                            nova_identity
+                        )
+
+                        if nova_assinatura != self.identidade_atual:
+
+                            # Descarta os dados do equipamento anterior
+                            self.reset()
+
+                            raise SerialReadOnlyError(
+                                "Foi detectada uma mudança de equipamento. "
+                                "O inventário anterior foi descartado. "
+                                "A próxima coleta identificará o novo switch."
+                            )
+
+                        self.ultima_verificacao_identidade = tempo_atual
+
                 if self.data is None:
                     identity = parse_identity(query(connection, "display version") or "")
+                    self.configurar_perfil(identity)
+                    self.identidade_atual = identidade_equipamento(identity)
+                    self.ultima_verificacao_identidade = time.monotonic()
+                    data["ports"] = criar_portas(self.perfil)
                     data.update(identity, name=identity["model"])
                     publish()
                     refresh_inventory(connection)
@@ -422,12 +642,16 @@ class PhysicalDashboard:
                         # Periodic independent check of the lab VLAN.
                         refresh_vlan_detail(connection, 12)
                     elif stage == 8:
-                        n = 4 + (self.port_cursor % 25)
-                        self.port_cursor += 1
-                        refresh_port(connection, n)
+                        quantidade_restante = self.total_portas - 3
+
+                        if quantidade_restante > 0:
+                            n = 4 + (self.port_cursor % quantidade_restante)
+                            self.port_cursor += 1
+                            refresh_port(connection, n)
+
                     elif stage == 12 and (not self.mac_attempt or time.monotonic() - self.mac_attempt >= 60):
                         self.mac_attempt = time.monotonic()
-                        new_macs = parse_mac_table(query(connection, "display mac-address") or "")
+                        new_macs = parse_mac_table(query(connection, "display mac-address") or "", self.perfil)
                         if new_macs is not None:
                             new_macs["entries"].sort(key=lambda r: (r["port"], r["vlan"], r["mac"]))
                             data["mac_table"] = new_macs
