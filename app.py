@@ -515,14 +515,37 @@ def connections():
     })
 
 
+
+def _physical_config_locked():
+    """Bloqueia configuracao fisica sem perfil S3900 confirmado."""
+
+    if mode() != "serial":
+        return False
+
+    estado = physical_dashboard.cached()
+
+    if not isinstance(estado, dict):
+        return True
+
+    snapshot = estado.get("snapshot")
+
+    return not (
+        isinstance(snapshot, dict)
+        and snapshot.get("profile") == "s3900"
+        and estado.get("stale") is False
+    )
+
+
 @app.get("/api/config/status")
 def configuration_status():
     serial_mode = mode() in {"serial", "virtual"}
-    enabled = serial_mode and config_writes_enabled()
+    bloqueado = _physical_config_locked()
+    enabled = serial_mode and config_writes_enabled() and not bloqueado
     return jsonify({
-        "available": serial_mode,
+        "available": serial_mode and not bloqueado,
         "writes_enabled": enabled,
         "message": (
+            "Configuração guiada bloqueada: equipamento não identificado ou perfil físico ainda não validado." if bloqueado else
             "Configuração virtual habilitada: nenhuma alteração física." if mode() == "virtual" else
             "A configuração por console está habilitada com prévia por operação."
             if enabled else
@@ -538,6 +561,12 @@ def configuration_status():
 def configuration_preview():
     if mode() not in {"serial", "virtual"}:
         return jsonify({"error": "A configuração requer QM_MODE=serial e o cabo console local."}), 409
+    if _physical_config_locked():
+        return jsonify({
+            "ok": False,
+            "error": "Configuração guiada indisponível para este equipamento."
+        }), 409
+
     try:
         payload = request.get_json(silent=True)
         plan = build_plan(payload)
@@ -564,6 +593,12 @@ def configuration_apply():
         return jsonify({"ok": False, "error": "A configuração requer o modo serial local."}), 409
     if not config_writes_enabled():
         return jsonify({"ok": False, "error": "Envio de mudanças está bloqueado. Habilite QM_ENABLE_CONFIG_WRITES somente após revisar a prévia e os comandos para o firmware instalado."}), 403
+    if _physical_config_locked():
+        return jsonify({
+            "ok": False,
+            "error": "Modelo não autorizado para configuração guiada."
+        }), 409
+
     if cli_session.connected:
         return jsonify({"ok": False, "error": "Encerre a sessão CLI antes de aplicar uma configuração pela área guiada."}), 409
     try:
@@ -587,6 +622,12 @@ def configuration_apply():
 def configuration_backup():
     if mode() not in {"serial", "virtual"}:
         return jsonify({"ok": False, "error": "O backup requer o modo serial local."}), 409
+    if _physical_config_locked():
+        return jsonify({
+            "ok": False,
+            "error": "Backup indisponível para este perfil até validação."
+        }), 409
+
     if cli_session.connected:
         return jsonify({"ok": False, "error": "Encerre a sessão CLI antes de exportar o backup serial."}), 409
     try:

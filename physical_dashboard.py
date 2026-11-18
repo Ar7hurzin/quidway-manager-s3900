@@ -483,7 +483,7 @@ class PhysicalDashboard:
         def publish():
             data.update(collected_at=now(), port=settings.port,
                         baud_rate=settings.baud_rate, notes=list(notes),
-                        expected_ports=28)
+                        expected_ports=self.total_portas)
             reconcile_vlan_members(data)
             self.data = copy.deepcopy(data)
             self.outputs = copy.deepcopy(outputs)
@@ -598,6 +598,7 @@ class PhysicalDashboard:
                     self.ultima_verificacao_identidade = time.monotonic()
                     data["ports"] = criar_portas(self.perfil)
                     data.update(identity, name=identity["model"])
+                    data["name"] = f"Huawei Quidway {identity['series']}"
                     publish()
                     refresh_inventory(connection)
                     publish()

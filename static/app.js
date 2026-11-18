@@ -18,6 +18,7 @@ window.fetch = (input, init = {}) => {
 };
 let appStatus = { mode: "demo", ready: false };
 let configStatus = { available: false, writes_enabled: false };
+let lastConfigProfile = null;
 let pendingConfigPreview = null;
 let cliToken = sessionStorage.getItem("qm_cli_token") || "";
 let cliConnected = false;
@@ -108,9 +109,80 @@ function renderPhysical(data, stale = false) {
   if (!data) return;
   const text = (id, value) => { $(id).textContent = value ?? "—"; };
   const ports = [...(data.ports || [])].sort((a,b) => a.number - b.number);
+
+  // Ajusta a pagina Configuracao conforme o switch
+  if (["s3000", "s3900"].includes(data.profile)) {
+
+    const total = ports.length;
+
+    const tituloPortas = document.querySelector(
+      "#port-config-card .panel-head h2"
+    );
+
+    const etiquetaPortas = document.querySelector(
+      "#port-config-card .subtle-tag"
+    );
+
+    const etiquetaCobertura = document.querySelector(
+      "#coverage-card .subtle-tag"
+    );
+
+    const campoPorta = document.querySelector(
+      '#port-form input[name="port"]'
+    );
+
+    if (tituloPortas) {
+      tituloPortas.textContent = `Portas 1–${total}`;
+    }
+
+    if (etiquetaPortas) {
+      etiquetaPortas.textContent =
+        data.profile === "s3000"
+          ? "24 Fast Ethernet"
+          : "24 FE · 4 GE";
+    }
+
+    if (etiquetaCobertura) {
+      etiquetaCobertura.textContent =
+        data.profile === "s3000"
+          ? "S3000 · configuração não validada"
+          : "S3900 · configuração controlada";
+    }
+
+    if (campoPorta) {
+      campoPorta.max = String(total);
+
+      if (Number(campoPorta.value) > total) {
+        campoPorta.value = "1";
+      }
+    }
+  }
+
+  // Atualiza as permissoes quando o perfil muda
+  if (lastConfigProfile !== data.profile) {
+    lastConfigProfile = data.profile;
+    loadConfigurationStatus();
+  }
   const known = ports.filter(p => p.state === "up" || p.state === "down");
-  text("device-name", data.name);
-  text("device-model", data.version);
+  const nome = data.name || data.model || "Switch não identificado";
+
+  text("device-name", nome);
+
+  text(
+    "device-model",
+    `Modelo: ${data.model || "—"} · VRP ${data.version || "—"}${data.release ? " · Release " + data.release : ""}`
+  );
+
+  const identificacaoLateral = document.querySelector(".header-device-tag");
+
+  if (identificacaoLateral) {
+    identificacaoLateral.innerHTML =
+      `<i class="pulse"></i>${escapeHtml(nome)}`;
+  }
+
+  if (pageKind === "dashboard") {
+    $("page-breadcrumb").textContent = `SWITCHES / ${nome}`;
+  }
   text("ports-count", known.length === ports.length ? known.filter(p => p.state === "up").length + " / " + ports.length : known.filter(p => p.state === "up").length + " / " + (data.expected_ports || 28) + " *");
   text("ports-count-note", known.length === ports.length ? "Todas as portas consultadas" : known.length + " de " + (data.expected_ports || 28) + " estados de link confirmados");
   text("vlan-count", data.vlans === null ? "—" : data.vlans.length);
@@ -152,6 +224,28 @@ function renderPhysical(data, stale = false) {
   $("physical-traffic").innerHTML = traffic.length ? '<p class="panel-note">Amostras do próprio switch; cada porta tem seu horário de coleta.</p><div class="table-wrap"><table><thead><tr><th>Porta</th><th>Entrada (bit/s)</th><th>Saída (bit/s)</th><th>Coleta</th></tr></thead><tbody>' + traffic.map(p=>"<tr>" + [p.number,p.rx_bps ?? "—",p.tx_bps ?? "—",new Date(p.collected_at).toLocaleTimeString("pt-BR")].map(v=>"<td>"+escapeHtml(v)+"</td>").join("") + "</tr>").join("") + '</tbody></table></div>' : "";
   const cards = $("system-page").querySelectorAll(".system-detail-card");
   cards[0].querySelector("h2").textContent = data.model;
+
+  // Informacoes fisicas conforme o perfil identificado
+  const cartaoPortas = cards[2];
+  const detalhesPortas = cartaoPortas.querySelectorAll("dd");
+
+  cartaoPortas.querySelector("h2").textContent =
+    `${ports.length} interfaces`;
+
+  detalhesPortas[0].textContent =
+    ["s3000", "s3900"].includes(data.profile)
+      ? "24 portas"
+      : "—";
+
+  detalhesPortas[1].textContent =
+    data.profile === "s3900"
+      ? "4 portas"
+      : data.profile === "s3000"
+        ? "0 no perfil"
+        : "—";
+
+  detalhesPortas[2].textContent =
+    "Não detalhado nesta coleta";
   cards[0].querySelectorAll("dd")[1].textContent = data.version;
   [data.hardware, data.cpld, data.bootrom].forEach((v,i) => cards[1].querySelectorAll("dd")[i].textContent = v || "—");
   cards[3].querySelector("h2").textContent = data.port + " · " + data.baud_rate + " baud";
