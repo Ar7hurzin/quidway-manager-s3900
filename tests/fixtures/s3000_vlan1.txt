@@ -1,0 +1,15 @@
+VLAN ID: 1
+ VLAN Type: static
+ Route Interface: not configured
+ Description: VLAN 0001
+ Name: VLAN 0001
+ Tagged   Ports: none
+ Untagged Ports:
+             Ethernet0/1           Ethernet0/2           Ethernet0/3
+             Ethernet0/4           Ethernet0/5           Ethernet0/6
+             Ethernet0/7           Ethernet0/8           Ethernet0/9
+             Ethernet0/10          Ethernet0/11          Ethernet0/12
+             Ethernet0/13          Ethernet0/14          Ethernet0/15
+             Ethernet0/16          Ethernet0/17          Ethernet0/18
+             Ethernet0/19          Ethernet0/20          Ethernet0/21
+             Ethernet0/22          Ethernet0/23          Ethernet0/24

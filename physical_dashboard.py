@@ -643,10 +643,10 @@ class PhysicalDashboard:
                         self.priority_vlans.discard(v)
                     elif stage == 0:
                         refresh_inventory(connection)
-                    elif stage in {1, 2, 3, 5, 6, 7, 9, 10, 11}:
-                        n = (stage - 1) % 4 + 1
-                        n = {1: 1, 2: 2, 3: 3, 5: 1, 6: 2,
-                             7: 3, 9: 1, 10: 2, 11: 3}[stage]
+                    elif stage in {1, 2, 3, 5, 6, 7, 8, 9, 10, 11}:
+                        # Rodizio automatico por todas as portas fisicas.
+                        n = self.port_cursor % self.total_portas + 1
+                        self.port_cursor += 1
                         refresh_port(connection, n)
                     elif stage == 4:
                         if self.perfil == "s3000":
@@ -659,14 +659,6 @@ class PhysicalDashboard:
                         else:
                             # Mantem o comportamento existente do S3900.
                             refresh_vlan_detail(connection, 12)
-                    elif stage == 8:
-                        quantidade_restante = self.total_portas - 3
-
-                        if quantidade_restante > 0:
-                            n = 4 + (self.port_cursor % quantidade_restante)
-                            self.port_cursor += 1
-                            refresh_port(connection, n)
-
                     elif stage == 12 and (not self.mac_attempt or time.monotonic() - self.mac_attempt >= 60):
                         self.mac_attempt = time.monotonic()
                         new_macs = parse_mac_table(query(connection, "display mac-address") or "", self.perfil)

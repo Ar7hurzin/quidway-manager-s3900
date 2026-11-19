@@ -1,0 +1,4 @@
+VLAN function is enabled.
+ Total 1 VLAN exist(s).
+ Now, the following VLAN exist(s):
+  1(default),
