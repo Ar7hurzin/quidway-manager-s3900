@@ -182,3 +182,4 @@ section[id],article[id]{scroll-margin-top:116px}
 /* Old observations remain visible but cannot resemble a current link. */
 html[data-mode="serial"] .port.stale{background:#fff7e5;border-color:#d9bb7d;color:#805400}
 html[data-mode="serial"] .port.stale .port-state{color:#805400}
+.admin-pending-count{display:inline-block;min-width:18px;margin-left:6px;padding:1px 6px;border-radius:999px;background:#ad2938;color:#fff;font-size:11px;font-weight:700;line-height:16px;text-align:center}

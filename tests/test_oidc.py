@@ -67,8 +67,11 @@ class SSOLoginTest(unittest.TestCase):
         with patch.object(manager, 'oidc_settings', settings), patch.object(manager, 'oidc_client', client):
             self.assertEqual(sso_login(self.client, amr=None).status_code, 302)
 
-    def test_rejects_account_outside_allowlist(self):
-        self.assertRejected(sso_login(self.client, email='intruder@example.test'), 'não está autorizada')
+    def test_account_outside_allowlist_gets_no_session(self):
+        response = sso_login(self.client, email='intruder@example.test')
+        self.assertEqual(response.status_code, 403)
+        self.assertIn('administrador', response.get_data(as_text=True))
+        self.assertEqual(self.client.get('/api/status').status_code, 401)
 
     def test_rejects_unverified_email(self):
         self.assertRejected(sso_login(self.client, email_verified=False), 'não confirmou o e-mail')
@@ -186,6 +189,72 @@ class SSOLoginTest(unittest.TestCase):
             location = self.client.post('/logout', data={'csrf_token': csrf}).headers['Location']
         self.assertTrue(location.startswith(ISSUER + '/logout?'))
         self.assertEqual(parse_qs(urlsplit(location).query)['post_logout_redirect_uri'], ['http://127.0.0.1:8787/login'])
+
+
+TENANT = '11111111-2222-3333-4444-555555555555'
+MS_ISSUER = f'https://login.microsoftonline.com/{TENANT}/v2.0'
+
+
+class MicrosoftEntraTest(unittest.TestCase):
+    """Work/school accounts: no email_verified claim, identified by UPN in one tenant."""
+
+    def setUp(self):
+        env = {'QM_OIDC_ISSUER': MS_ISSUER, 'QM_OIDC_CLIENT_ID': CLIENT_ID,
+               'QM_OIDC_ALLOWED_EMAILS': 'Voce@Empresa.com.br'}
+        with patch.dict('os.environ', env):
+            self.settings = OIDCSettings.from_environment()
+        self.client = OIDCClient(self.settings)
+        discovery = {'issuer': MS_ISSUER,
+                     'authorization_endpoint': f'https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/authorize',
+                     'token_endpoint': f'https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/token',
+                     'jwks_uri': f'https://login.microsoftonline.com/{TENANT}/discovery/v2.0/keys',
+                     'id_token_signing_alg_values_supported': ['RS256']}
+        from oidc_fake import jwks
+        responses = {discovery['jwks_uri']: jwks(),
+                     MS_ISSUER + '/.well-known/openid-configuration': discovery}
+        guard = patch('oidc_auth._http_json', side_effect=lambda url, **_: responses[url])
+        guard.start()
+        self.addCleanup(guard.stop)
+
+    def token(self, **changes):
+        now = int(time.time())
+        claims = {'iss': MS_ISSUER, 'aud': CLIENT_ID, 'sub': 'pairwise-sub', 'tid': TENANT, 'oid': 'object-id',
+                  'iat': now, 'exp': now + 300, 'nonce': 'n1', 'preferred_username': 'voce@empresa.com.br',
+                  'amr': ['pwd', 'mfa']}
+        claims.update(changes)
+        return sign({k: v for k, v in claims.items() if v is not None})
+
+    def test_defaults_for_microsoft_issuer(self):
+        self.assertEqual(self.settings.user_claim, 'preferred_username')
+        self.assertFalse(self.settings.require_email_verified)
+        self.assertEqual(self.settings.problems(), [])
+
+    def test_work_account_with_mfa_is_accepted_without_email_verified(self):
+        identity = self.client.validate_id_token(self.token(), 'n1')
+        self.assertEqual(identity['email'], 'voce@empresa.com.br')
+
+    def test_work_account_without_mfa_is_refused(self):
+        with self.assertRaisesRegex(OIDCError, 'dois fatores'):
+            self.client.validate_id_token(self.token(amr=['pwd']), 'n1')
+
+    def test_email_claim_is_not_trusted_for_identity(self):
+        # A mutable 'email' attribute must not grant access in place of the UPN.
+        with self.assertRaisesRegex(OIDCError, 'não está autorizada'):
+            self.client.validate_id_token(self.token(preferred_username='outro@empresa.com.br',
+                                                     email='voce@empresa.com.br'), 'n1')
+
+    def test_token_from_another_tenant_is_refused(self):
+        other = 'https://login.microsoftonline.com/99999999-2222-3333-4444-555555555555/v2.0'
+        with self.assertRaises(OIDCError):
+            self.client.validate_id_token(self.token(iss=other), 'n1')
+
+    def test_shared_or_domain_tenants_are_rejected(self):
+        for issuer in ('https://login.microsoftonline.com/common/v2.0',
+                       'https://login.microsoftonline.com/organizations/v2.0',
+                       'https://login.microsoftonline.com/empresa.com.br/v2.0',
+                       f'https://login.microsoftonline.com/{TENANT}'):
+            with self.subTest(issuer=issuer):
+                self.assertTrue(replace(self.settings, issuer=issuer).problems())
 
 
 class SettingsTest(unittest.TestCase):

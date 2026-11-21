@@ -24,7 +24,7 @@
     </aside>
 
     <main class="main">
-      <header class="topbar"><div><div id="page-breadcrumb" class="eyebrow">SWITCHES <span>/</span> QUIDWAY 3900-SI</div><h1 id="page-title">Dashboard</h1></div><div class="top-actions"><span id="mode-pill" class="mode-pill">CARREGANDO</span><span id="live-status" class="subtle-tag" role="status" aria-live="polite">Aguardando monitoramento</span><button id="refresh" class="button button-primary"><span>↻</span> Atualizar leitura</button><form action="/logout" method="post" class="logout-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-secondary" type="submit">Sair</button></form></div></header>
+      <header class="topbar"><div><div id="page-breadcrumb" class="eyebrow">SWITCHES <span>/</span> QUIDWAY 3900-SI</div><h1 id="page-title">Dashboard</h1></div><div class="top-actions"><span id="mode-pill" class="mode-pill">CARREGANDO</span><span id="live-status" class="subtle-tag" role="status" aria-live="polite">Aguardando monitoramento</span><button id="refresh" class="button button-primary"><span>↻</span> Atualizar leitura</button>{% if is_admin %}<a class="button button-secondary" href="/admin">Administração{% if pending %} <span class="admin-pending-count" title="Pedidos de acesso pendentes">{{ pending }}</span>{% endif %}</a>{% endif %}<form action="/logout" method="post" class="logout-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-secondary" type="submit">Sair</button></form></div></header>
       <div id="mode-banner" class="mode-banner" role="status"><span class="banner-icon">!</span><span>Carregando o modo da aplicação...</span></div>
 
       <section id="overview" class="section device-row">

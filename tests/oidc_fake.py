@@ -4,6 +4,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
+import tempfile
 import time
 from contextlib import contextmanager
 from unittest.mock import patch
@@ -17,8 +19,11 @@ CLIENT_ID = 'quidway-test'
 CLIENT_SECRET = 'client-secret-for-tests-only-0123456789'
 ADMIN = 'admin@example.test'
 SECOND = 'second@example.test'
+# Tests must never touch the real instance/access-list.json of this checkout.
+ACCESS_FILE = os.path.join(tempfile.mkdtemp(prefix='qm-access-test-'), 'access-list.json')
 ENV = dict(QM_OIDC_ISSUER=ISSUER, QM_OIDC_CLIENT_ID=CLIENT_ID, QM_OIDC_CLIENT_SECRET=CLIENT_SECRET,
-           QM_OIDC_ALLOWED_EMAILS=f'{ADMIN},{SECOND}', QM_OIDC_REDIRECT_URI='http://127.0.0.1:8787/auth/callback')
+           QM_OIDC_ALLOWED_EMAILS=f'{ADMIN},{SECOND}', QM_OIDC_REDIRECT_URI='http://127.0.0.1:8787/auth/callback',
+           QM_ACCESS_FILE=ACCESS_FILE)
 
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 KID = 'test-key-1'

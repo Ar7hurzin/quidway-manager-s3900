@@ -23,7 +23,7 @@ class LauncherTest(unittest.TestCase):
                         break
                     except OSError: time.sleep(.15)
                 else: self.fail('Server did not start')
-                self.assertTrue(health['auth_configured']); self.assertEqual(health['mode'],'demo')
+                self.assertTrue(health['auth_configured']); self.assertEqual(health['mode'],'demo'); self.assertEqual(health['auth'],'oidc')
                 with urlopen(base+'/login',timeout=3) as response: self.assertIn(b'sso-login',response.read())
                 duplicate=subprocess.run(cmd,env=env,capture_output=True,text=True,encoding='utf-8',timeout=10)
                 self.assertEqual(duplicate.returncode,0,duplicate.stderr)
@@ -31,3 +31,29 @@ class LauncherTest(unittest.TestCase):
                 proc.terminate()
                 try: proc.wait(timeout=8)
                 except subprocess.TimeoutExpired: proc.kill(); proc.wait(timeout=5)
+
+
+class OutdatedInstanceTest(unittest.TestCase):
+    def test_password_era_instance_is_not_reused(self):
+        """A pre-SSO Manager on the port must be reported, never silently reused."""
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        class OldHealth(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = json.dumps({'ok': True, 'service': 'Quidway Manager', 'mode': 'serial',
+                                   'auth_required': True, 'auth_configured': True}).encode()
+                self.send_response(200); self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+            def log_message(self, *args): pass
+        server = HTTPServer(('127.0.0.1', 0), OldHealth)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close); self.addCleanup(server.shutdown)
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)/'local-settings.ps1'
+            p.write_text("$env:QM_OIDC_ISSUER = 'https://idp.example.test'\n$env:QM_OIDC_CLIENT_ID = 'x'\n$env:QM_OIDC_ALLOWED_EMAILS = 'a@example.test'\n$env:QM_SECRET_KEY = '"+secrets.token_urlsafe(48)+"'\n", encoding='utf-8')
+            env = {k: v for k, v in os.environ.items() if not k.startswith('QM_')}
+            env.update(QM_SETTINGS_FILE=str(p), QM_WEB_PORT=str(server.server_address[1]))
+            result = subprocess.run([sys.executable, str(ROOT/'start.py')], env=env, capture_output=True,
+                                    text=True, encoding='utf-8', timeout=15)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('versão anterior', result.stderr)

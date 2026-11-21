@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>Administração · Quidway Manager</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20261117-reliability-1">
+  <link rel="stylesheet" href="/static/admin.css?v=2">
+</head>
+<body>
+  <main class="main admin-main">
+    <header class="topbar">
+      <div><div class="eyebrow">QUIDWAY MANAGER <span>/</span> ADMINISTRAÇÃO</div><h1>Quem pode acessar</h1></div>
+      <div class="top-actions"><a class="button button-secondary" href="/">← Voltar ao painel</a><form action="/logout" method="post" class="logout-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-secondary" type="submit">Sair</button></form></div>
+    </header>
+
+    <section class="card admin-card">
+      <div class="card-overline">COMO FUNCIONA</div>
+      <p class="panel-note">O login é sempre pelo SSO do provedor (com verificação em duas etapas); nenhuma senha é guardada aqui. Esta lista só define <strong>quem</strong> pode entrar. Todos têm o mesmo acesso ao painel; somente você ({{ user }}) administra esta lista. Remover alguém encerra o acesso imediatamente.</p>
+      <p id="google-note" class="panel-note" hidden>Com Google, um domínio inteiro (ex. <code>@ufu.br</code>) só libera contas do <strong>Google Workspace</strong> daquela organização. Contas Gmail pessoais precisam ser adicionadas individualmente. Confirme que cada pessoa tem a verificação em duas etapas ativada.</p>
+    </section>
+
+    <section class="card admin-card">
+      <div class="card-overline">PEDIDOS DE ACESSO</div>
+      <p class="panel-note">Quem entra pelo SSO sem estar liberado aparece aqui, com o nome e o e-mail confirmados pelo provedor. Só entra depois da sua aprovação. Quem for recusado só pode pedir de novo após 24 horas.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Nome</th><th>E-mail</th><th>Pedido em</th><th></th></tr></thead>
+        <tbody id="requests-body"><tr><td colspan="4" class="table-empty">Carregando…</td></tr></tbody>
+      </table></div>
+    </section>
+
+    <section class="card admin-card">
+      <div class="card-overline">ADICIONAR MANUALMENTE</div>
+      <form id="add-form" class="admin-add">
+        <label for="add-value">E-mail (pessoa@ufu.br) ou domínio inteiro (@ufu.br)</label>
+        <div class="admin-add-row"><input id="add-value" name="value" autocomplete="off" maxlength="254" required placeholder="pessoa@ufu.br ou @ufu.br"><button class="button button-primary" type="submit">Adicionar</button></div>
+      </form>
+      <p id="admin-message" class="admin-message" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="card admin-card">
+      <div class="card-overline">LIBERADOS</div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>E-mail ou domínio</th><th>Tipo</th><th>Adicionado</th><th></th></tr></thead>
+        <tbody id="access-body"><tr><td colspan="4" class="table-empty">Carregando…</td></tr></tbody>
+      </table></div>
+    </section>
+  </main>
+  <script src="/static/admin.js?v=2" defer></script>
+</body>
+</html>

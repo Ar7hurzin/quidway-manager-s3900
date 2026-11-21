@@ -14,6 +14,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 import time
@@ -31,6 +32,14 @@ class OIDCError(RuntimeError):
     """Login refused. The message is safe to show in the browser."""
 
 
+class OIDCNotAuthorized(OIDCError):
+    """Fully verified identity (signature, nonce, e-mail, 2FA) that is not on the allowlist."""
+
+    def __init__(self, identity: dict):
+        super().__init__("Esta conta não está autorizada neste Quidway Manager.")
+        self.identity = identity
+
+
 # Only asymmetric signatures: a symmetric/"none" token could be forged with
 # the client secret or without any key at all.
 ASYMMETRIC_ALGORITHMS = ("RS256", "RS384", "RS512", "PS256", "PS384", "PS512",
@@ -44,6 +53,15 @@ DISCOVERY_TTL_SECONDS = 60 * 60
 JWKS_REFRESH_COOLDOWN_SECONDS = 60
 CLOCK_LEEWAY_SECONDS = 60
 MAX_RESPONSE_BYTES = 1_000_000
+MICROSOFT_HOST = "login.microsoftonline.com"
+GOOGLE_ISSUER = "https://accounts.google.com"
+
+
+def microsoft_issuer(issuer: str) -> bool:
+    try:
+        return (urlsplit(issuer).hostname or "").lower() == MICROSOFT_HOST
+    except ValueError:
+        return False
 
 
 def _csv(value: str) -> tuple[str, ...]:
@@ -97,12 +115,28 @@ class OIDCSettings:
     accepted_acr: tuple[str, ...] = ()
     acr_values: str = ""
     provider_logout: bool = False
+    # Claim compared with the allowlist, and whether the IdP must assert it is verified.
+    # Microsoft Entra ID work accounts carry no email_verified claim: they are
+    # identified by preferred_username (UPN) inside a single, fixed tenant.
+    user_claim: str = "email"
+    require_email_verified: bool = True
+    # The single administrator: always allowed, and the only one who manages the
+    # runtime access list. Defaults to the first e-mail in QM_OIDC_ALLOWED_EMAILS.
+    admin_email: str = ""
+
+    @property
+    def admin(self) -> str:
+        return (self.admin_email or next(iter(self.allowed_emails), "")).lower()
 
     @classmethod
     def from_environment(cls) -> "OIDCSettings":
         port = os.getenv("QM_WEB_PORT", "8787").strip() or "8787"
+        issuer = os.getenv("QM_OIDC_ISSUER", "").strip()
+        microsoft = microsoft_issuer(issuer)
         return cls(
-            issuer=os.getenv("QM_OIDC_ISSUER", "").strip(),
+            issuer=issuer,
+            user_claim=os.getenv("QM_OIDC_USER_CLAIM", "").strip() or ("preferred_username" if microsoft else "email"),
+            require_email_verified=_flag(os.getenv("QM_OIDC_REQUIRE_EMAIL_VERIFIED"), not microsoft),
             client_id=os.getenv("QM_OIDC_CLIENT_ID", "").strip(),
             client_secret=os.getenv("QM_OIDC_CLIENT_SECRET", "").strip(),
             redirect_uri=(os.getenv("QM_OIDC_REDIRECT_URI", "").strip()
@@ -113,6 +147,7 @@ class OIDCSettings:
             accepted_acr=_csv(os.getenv("QM_OIDC_ACCEPTED_ACR", "")),
             acr_values=os.getenv("QM_OIDC_ACR_VALUES", "").strip(),
             provider_logout=_flag(os.getenv("QM_OIDC_PROVIDER_LOGOUT"), False),
+            admin_email=os.getenv("QM_OIDC_ADMIN_EMAIL", "").strip().lower(),
         )
 
     def problems(self) -> list[str]:
@@ -124,6 +159,17 @@ class OIDCSettings:
             problem = _url_problem(self.issuer, "QM_OIDC_ISSUER", allow_loopback_http=True)
             if problem or urlsplit(self.issuer).query:
                 found.append(problem or "QM_OIDC_ISSUER não pode ter parâmetros de consulta.")
+            elif microsoft_issuer(self.issuer):
+                segments = [s for s in urlsplit(self.issuer).path.split("/") if s]
+                # The discovery document always names the tenant by its GUID, so a
+                # domain here would never match; shared tenants admit any organization.
+                if (len(segments) != 2 or segments[1] != "v2.0"
+                        or not re.fullmatch(r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}", segments[0])):
+                    found.append("Para Microsoft, use o issuer do seu tenant com o ID (GUID): "
+                                 "https://login.microsoftonline.com/<ID-do-tenant>/v2.0. "
+                                 "Não use common/organizations/consumers nem o domínio da empresa.")
+        if self.user_claim not in {"email", "preferred_username", "upn"}:
+            found.append("QM_OIDC_USER_CLAIM deve ser email, preferred_username ou upn.")
         if not self.client_id:
             found.append("Defina QM_OIDC_CLIENT_ID.")
         problem = _url_problem(self.redirect_uri, "QM_OIDC_REDIRECT_URI", allow_loopback_http=True)
@@ -131,11 +177,13 @@ class OIDCSettings:
             found.append(problem)
         elif urlsplit(self.redirect_uri).path != "/auth/callback":
             found.append("QM_OIDC_REDIRECT_URI precisa terminar em /auth/callback.")
-        if not self.allowed_emails:
-            found.append("Defina QM_OIDC_ALLOWED_EMAILS; sem allowlist qualquer conta do provedor entraria.")
-        elif any(email.count("@") != 1 or email.startswith("@") or email.endswith("@")
-                 for email in self.allowed_emails):
-            found.append("QM_OIDC_ALLOWED_EMAILS deve conter e-mails completos separados por vírgula.")
+        if not self.admin:
+            found.append("Defina QM_OIDC_ADMIN_EMAIL com o e-mail do administrador.")
+        elif not re.fullmatch(r"[^@\s,]+@[^@\s,]+\.[^@\s,]+", self.admin):
+            found.append("QM_OIDC_ADMIN_EMAIL deve ser um e-mail completo.")
+        if any(not re.fullmatch(r"[^@\s,]+@[^@\s,]+\.[^@\s,]+", email) for email in self.allowed_emails):
+            found.append("QM_OIDC_ALLOWED_EMAILS deve conter e-mails completos separados por vírgula "
+                         "(domínios inteiros são liberados pela tela de administração).")
         if self.require_mfa and not self.mfa_amr and not self.accepted_acr:
             found.append("Com QM_OIDC_REQUIRE_MFA=true, informe QM_OIDC_MFA_AMR ou QM_OIDC_ACCEPTED_ACR.")
         for value in (self.issuer, self.client_id, self.client_secret, self.redirect_uri, self.acr_values):
@@ -149,13 +197,18 @@ class OIDCSettings:
 
     def version(self) -> str:
         """Changes whenever who may sign in changes, revoking existing sessions."""
-        material = "\0".join((self.issuer, self.client_id, self.redirect_uri,
+        material = "\0".join((self.issuer, self.client_id, self.redirect_uri, self.admin,
                               ",".join(sorted(self.allowed_emails)), str(self.require_mfa),
+                              self.user_claim, str(self.require_email_verified),
                               ",".join(sorted(self.mfa_amr)), ",".join(sorted(self.accepted_acr))))
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
     def email_allowed(self, email: object) -> bool:
-        return isinstance(email, str) and email.lower() in self.allowed_emails
+        """Static authorization from configuration: the administrator plus QM_OIDC_ALLOWED_EMAILS."""
+        return isinstance(email, str) and (email.lower() == self.admin or email.lower() in self.allowed_emails)
+
+    def is_admin(self, email: object) -> bool:
+        return isinstance(email, str) and bool(self.admin) and email.lower() == self.admin
 
 
 def _http_json(url: str, *, form: dict | None = None, basic_auth: tuple[str, str] | None = None) -> dict:
@@ -173,7 +226,12 @@ def _http_json(url: str, *, form: dict | None = None, basic_auth: tuple[str, str
         with urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
     except HTTPError as exc:
-        log.warning("Provedor OIDC respondeu HTTP %s em %s", exc.code, urlsplit(url).path)
+        # OAuth error codes (invalid_client, invalid_grant…) carry no secrets and explain the failure.
+        try:
+            code = str(json.loads(exc.read(4096)).get("error", ""))[:60]
+        except (ValueError, AttributeError, OSError):
+            code = ""
+        log.warning("Provedor OIDC respondeu HTTP %s em %s %s", exc.code, urlsplit(url).path, code)
         raise OIDCError("O provedor de login recusou a solicitação. Tente entrar novamente.") from exc
     except (URLError, OSError, ValueError) as exc:
         log.warning("Falha de rede com o provedor OIDC: %s", exc)
@@ -190,8 +248,11 @@ def _http_json(url: str, *, form: dict | None = None, basic_auth: tuple[str, str
 
 
 class OIDCClient:
-    def __init__(self, settings: OIDCSettings):
+    def __init__(self, settings: OIDCSettings, authorize=None):
         self.settings = settings
+        # authorize(email, org_domain) -> bool decides who may enter; the default
+        # uses only the static configuration (administrator + QM_OIDC_ALLOWED_EMAILS).
+        self.authorize = authorize or (lambda email, org_domain: settings.email_allowed(email))
         self._lock = threading.Lock()
         self._discovery: dict | None = None
         self._discovery_at = 0.0
@@ -338,17 +399,36 @@ class OIDCClient:
                 and hmac.compare_digest(supplied_nonce, nonce)):
             raise OIDCError("Token de login não corresponde a esta tentativa.")
 
-        email = claims.get("email")
-        if claims.get("email_verified") not in (True, "true") or not isinstance(email, str):
+        email = claims.get(self.settings.user_claim)
+        if not isinstance(email, str) or not email:
+            raise OIDCError("O provedor não informou o e-mail/login desta conta.")
+        if self.settings.require_email_verified and claims.get("email_verified") not in (True, "true"):
             raise OIDCError("O provedor não confirmou o e-mail desta conta.")
-        if not self.settings.email_allowed(email):
-            log.warning("Login SSO recusado para conta fora da allowlist")
-            raise OIDCError("Esta conta não está autorizada neste Quidway Manager.")
+        # 2FA is checked before authorization so that only a fully verified
+        # identity can ever be recorded as an access request.
         if not self.mfa_satisfied(claims):
             raise OIDCError("O provedor não confirmou a autenticação de dois fatores. "
                             "Ative o 2FA na sua conta e entre novamente.")
-        return {"email": email.lower(), "subject": str(claims["sub"]),
-                "name": str(claims.get("name") or "")[:120]}
+        org_domain = self.organization_domain(claims)
+        identity = {"email": email.lower(), "subject": str(claims["sub"]),
+                    "name": str(claims.get("name") or "")[:120], "org_domain": org_domain}
+        if not self.authorize(identity["email"], org_domain):
+            log.warning("Login SSO recusado para conta fora da allowlist")
+            raise OIDCNotAuthorized(identity)
+        return identity
+
+    def organization_domain(self, claims: dict):
+        """Which domain the provider vouches the account belongs to, for '@domain' entries.
+
+        Google: only the Workspace 'hd' claim proves domain membership (a personal
+        Google account can carry any verified external address), so '' when absent.
+        Other providers: None, meaning the verified e-mail/UPN suffix is trusted
+        (Microsoft is already restricted to a single tenant).
+        """
+        if self.settings.issuer == GOOGLE_ISSUER:
+            hd = claims.get("hd")
+            return hd.lower() if isinstance(hd, str) else ""
+        return None
 
     def mfa_satisfied(self, claims: dict) -> bool:
         if not self.settings.require_mfa:

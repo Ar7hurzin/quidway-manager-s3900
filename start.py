@@ -11,9 +11,9 @@ from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parent
 SETTINGS = Path(os.environ.get('QM_SETTINGS_FILE', ROOT / 'local-settings.ps1')).expanduser()
-AUTH = {'QM_OIDC_ISSUER', 'QM_OIDC_CLIENT_ID', 'QM_OIDC_ALLOWED_EMAILS', 'QM_SECRET_KEY'}
-OIDC = AUTH | {'QM_OIDC_CLIENT_SECRET', 'QM_OIDC_REDIRECT_URI', 'QM_OIDC_REQUIRE_MFA', 'QM_OIDC_MFA_AMR', 'QM_OIDC_ACCEPTED_ACR', 'QM_OIDC_ACR_VALUES', 'QM_OIDC_PROVIDER_LOGOUT'}
-ALLOWED = OIDC | {'QM_MODE', 'QM_SERIAL_PORT', 'QM_SERIAL_BAUD', 'QM_WEB_PORT', 'QM_ENABLE_CONFIG_WRITES', 'QM_ENABLE_CLI', 'QM_HTTPS_ONLY', 'QM_CONNECT_TIMEOUT', 'QM_SWITCH_HOST', 'QM_SWITCH_PORT', 'QM_SWITCH_USER', 'QM_KNOWN_HOSTS', 'QM_SSH_KEY_FILE', 'QM_VIRTUAL_STATE'}
+AUTH = {'QM_OIDC_ISSUER', 'QM_OIDC_CLIENT_ID', 'QM_SECRET_KEY'}
+OIDC = AUTH | {'QM_OIDC_ADMIN_EMAIL', 'QM_OIDC_ALLOWED_EMAILS', 'QM_OIDC_CLIENT_SECRET', 'QM_OIDC_REDIRECT_URI', 'QM_OIDC_REQUIRE_MFA', 'QM_OIDC_MFA_AMR', 'QM_OIDC_ACCEPTED_ACR', 'QM_OIDC_ACR_VALUES', 'QM_OIDC_PROVIDER_LOGOUT', 'QM_OIDC_USER_CLAIM', 'QM_OIDC_REQUIRE_EMAIL_VERIFIED'}
+ALLOWED = OIDC | {'QM_MODE', 'QM_SERIAL_PORT', 'QM_SERIAL_BAUD', 'QM_WEB_PORT', 'QM_ENABLE_CONFIG_WRITES', 'QM_ENABLE_CLI', 'QM_HTTPS_ONLY', 'QM_CONNECT_TIMEOUT', 'QM_SWITCH_HOST', 'QM_SWITCH_PORT', 'QM_SWITCH_USER', 'QM_KNOWN_HOSTS', 'QM_SSH_KEY_FILE', 'QM_VIRTUAL_STATE', 'QM_ACCESS_FILE'}
 
 def load_settings():
     values = {}
@@ -60,9 +60,13 @@ def main():
     try:
         with urlopen(url+'/api/health', timeout=1) as resp:
             info = json.load(resp)
-        if info.get('service') == 'Quidway Manager' and info.get('auth_configured'):
+        if info.get('service') == 'Quidway Manager' and info.get('auth') == 'oidc' and info.get('auth_configured'):
             print('Quidway Manager já está em execução: '+url, flush=True); return 0
-        print('A porta já está ocupada por outro serviço ou por um Manager antigo. Encerre-o antes de iniciar.', file=sys.stderr); return 2
+        if info.get('service') == 'Quidway Manager':
+            # An instance from before the SSO login must never be silently reused.
+            print('Um Quidway Manager de versão anterior (login por senha) está rodando na porta '+str(port)+'. '
+                  'Encerre-o (Ctrl+C no terminal dele, ou: pkill -f "python start.py") e rode este comando novamente.', file=sys.stderr); return 2
+        print('A porta '+str(port)+' já está ocupada por outro serviço. Encerre-o ou defina outra QM_WEB_PORT.', file=sys.stderr); return 2
     except (URLError, OSError, ValueError, AttributeError):
         pass
     from app import app, _auth_configured, oidc_settings, start_live_monitor

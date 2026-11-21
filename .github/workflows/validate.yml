@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           trap 'docker compose down -v' EXIT
-          printf 'https://idp.example.test\nci-client\n\nci@example.test\n\n\n' | docker compose run --rm -T app configure
+          printf 'https://idp.example.test\nci-client\n\nci@example.test\n\n\n\n' | docker compose run --rm -T app configure
           docker compose up -d
           for i in $(seq 1 20); do curl -fsS http://127.0.0.1:8787/api/health && break; sleep 1; done
           curl -fsS http://127.0.0.1:8787/api/health | python -c 'import json,sys; assert json.load(sys.stdin)["auth_configured"]'

@@ -26,7 +26,8 @@ from physical_dashboard import PhysicalDashboard
 from live_monitor import LiveMonitor
 from lab_capture import record_lab_reading
 from session_registry import SessionRegistry
-from oidc_auth import OIDCClient, OIDCError, OIDCSettings
+from oidc_auth import GOOGLE_ISSUER, OIDCClient, OIDCError, OIDCNotAuthorized, OIDCSettings
+from access_list import AccessList, AccessListError
 
 physical_dashboard = PhysicalDashboard()
 
@@ -47,7 +48,18 @@ app.config.update(
 # Sign-in is delegated to an OpenID Connect provider: no password or password
 # hash exists anywhere in this application.
 oidc_settings = OIDCSettings.from_environment()
-oidc_client = OIDCClient(oidc_settings)
+# Runtime list of e-mails/domains the administrator has authorized (no passwords).
+access_list = AccessList()
+
+
+def _authorized(email, org_domain) -> bool:
+    """Checked at login AND on every request, so a removal takes effect immediately."""
+    if not isinstance(email, str):
+        return False
+    return oidc_settings.email_allowed(email) or access_list.allows(email, domain_verified_by=org_domain)
+
+
+oidc_client = OIDCClient(oidc_settings, authorize=lambda email, org_domain: _authorized(email, org_domain))
 ACTIVE_SESSION_TTL_SECONDS = 5 * 60
 SESSION_MAX_AGE_SECONDS = 8 * 60 * 60
 _session_registry = SessionRegistry()
@@ -90,10 +102,13 @@ def _render_login(error: str = "", status: int = 200):
     return render_template_string(LOGIN_PAGE, csrf_token=token, error=error, provider=provider), status
 
 
-def _render_manager():
-    template = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+def _render_manager(page: str = "index.html"):
+    template = (ROOT / "static" / page).read_text(encoding="utf-8")
     token = session.setdefault("csrf_token", secrets.token_urlsafe(32))
-    return render_template_string(template, csrf_token=token)
+    user = _signed_in_user()
+    is_admin = oidc_settings.is_admin(user)
+    pending = len(access_list.pending()) if is_admin else 0
+    return render_template_string(template, csrf_token=token, is_admin=is_admin, user=user or "", pending=pending)
 
 
 def _auth_configured() -> bool:
@@ -113,7 +128,7 @@ def _credential_version() -> str:
 def _signed_in_user():
     """The verified SSO e-mail of this browser session, or None."""
     user = session.get("qm_user")
-    return user if oidc_settings.email_allowed(user) else None
+    return user if _authorized(user, session.get("qm_org_domain")) else None
 
 
 def _invalidate_browser_session() -> None:
@@ -305,6 +320,23 @@ def login():
     return _render_login()
 
 
+ACCESS_REQUEST_MESSAGES = {
+    "pending": "Esta conta ainda não tem acesso. Seu pedido foi enviado ao administrador; entre novamente depois da aprovação.",
+    "already_pending": "Seu pedido de acesso já está com o administrador. Entre novamente depois da aprovação.",
+    "rejected": "O pedido de acesso desta conta foi recusado pelo administrador. Tente novamente mais tarde.",
+    "full": "Há muitos pedidos de acesso aguardando o administrador. Tente novamente mais tarde.",
+}
+
+
+def _record_access_request(identity: dict) -> str:
+    """Only a fully verified SSO identity reaches here; recording never grants access."""
+    try:
+        outcome = access_list.request(identity.get("email"), identity.get("name"))
+    except (AccessListError, OSError):
+        return "Esta conta não está autorizada neste Quidway Manager."
+    return ACCESS_REQUEST_MESSAGES[outcome]
+
+
 @app.get("/auth/callback")
 def auth_callback():
     # Single use: a replayed or second callback finds no pending attempt.
@@ -313,6 +345,8 @@ def auth_callback():
         return redirect(url_for("index"))
     try:
         identity = oidc_client.complete(pending, request.args)
+    except OIDCNotAuthorized as exc:
+        return _render_login(_record_access_request(exc.identity), 403)
     except OIDCError as exc:
         return _render_login(str(exc), 401)
     try:
@@ -324,6 +358,7 @@ def auth_callback():
     _invalidate_browser_session()
     session.permanent = True
     session["qm_user"] = identity["email"]
+    session["qm_org_domain"] = identity.get("org_domain")
     session["qm_session_id"] = session_id
     session["qm_login_time"] = time.time()
     session["csrf_token"] = secrets.token_urlsafe(32)
@@ -522,9 +557,94 @@ def dashboard_cache():
     return jsonify({"mode": "serial", "ok": True, "cli_busy": cli_session.connected, "monitor": physical_monitor.status(), **result})
 
 
+def _admin_only():
+    if not oidc_settings.is_admin(_signed_in_user()):
+        if request.path.startswith("/api/"):
+            return jsonify({"ok": False, "error": "Somente o administrador pode gerenciar o acesso."}), 403
+        return "Somente o administrador pode acessar esta página.", 403
+    return None
+
+
+@app.get("/admin")
+def admin_page():
+    return _admin_only() or _render_manager("admin.html")
+
+
+@app.get("/api/admin/access")
+def admin_access_list():
+    denied = _admin_only()
+    if denied:
+        return denied
+    return jsonify({"ok": True, "admin": oidc_settings.admin,
+                    "configured": list(oidc_settings.allowed_emails),
+                    "entries": access_list.entries(),
+                    "requests": access_list.pending(),
+                    "google": oidc_settings.issuer == GOOGLE_ISSUER})
+
+
+@app.post("/api/admin/access")
+def admin_access_add():
+    denied = _admin_only()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "JSON inválido."}), 400
+    try:
+        value = access_list.add(payload.get("value"), added_by=_signed_in_user())
+    except AccessListError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except OSError:
+        return jsonify({"ok": False, "error": "Não foi possível gravar a lista de acesso."}), 503
+    return jsonify({"ok": True, "value": value, "entries": access_list.entries()})
+
+
+def _admin_request_action(action):
+    denied = _admin_only()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "JSON inválido."}), 400
+    try:
+        email = action(payload.get("email"))
+    except AccessListError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except OSError:
+        return jsonify({"ok": False, "error": "Não foi possível gravar a lista de acesso."}), 503
+    return jsonify({"ok": True, "email": email})
+
+
+@app.post("/api/admin/requests/approve")
+def admin_request_approve():
+    return _admin_request_action(lambda email: access_list.approve(email, approved_by=_signed_in_user()))
+
+
+@app.post("/api/admin/requests/reject")
+def admin_request_reject():
+    return _admin_request_action(access_list.reject)
+
+
+@app.post("/api/admin/access/remove")
+def admin_access_remove():
+    denied = _admin_only()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "JSON inválido."}), 400
+    try:
+        value = access_list.remove(payload.get("value"))
+    except AccessListError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except OSError:
+        return jsonify({"ok": False, "error": "Não foi possível gravar a lista de acesso."}), 503
+    return jsonify({"ok": True, "value": value, "entries": access_list.entries()})
+
+
 @app.get("/api/health")
 def health():
-    return jsonify({"ok": True, "service": "Quidway Manager", "mode": mode(), "auth_required": True, "auth_configured": _auth_configured()})
+    return jsonify({"ok": True, "service": "Quidway Manager", "mode": mode(), "auth_required": True, "auth": "oidc", "auth_configured": _auth_configured()})
 
 
 @app.get("/api/connections")
