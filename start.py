@@ -11,8 +11,9 @@ from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parent
 SETTINGS = Path(os.environ.get('QM_SETTINGS_FILE', ROOT / 'local-settings.ps1')).expanduser()
-AUTH = {'QM_AUTH_USERNAME', 'QM_AUTH_PASSWORD_HASH', 'QM_SECRET_KEY'}
-ALLOWED = AUTH | {'QM_MODE', 'QM_SERIAL_PORT', 'QM_SERIAL_BAUD', 'QM_WEB_PORT', 'QM_ENABLE_CONFIG_WRITES', 'QM_ENABLE_CLI', 'QM_HTTPS_ONLY', 'QM_CONNECT_TIMEOUT', 'QM_SWITCH_HOST', 'QM_SWITCH_PORT', 'QM_SWITCH_USER', 'QM_KNOWN_HOSTS', 'QM_SSH_KEY_FILE', 'QM_VIRTUAL_STATE'}
+AUTH = {'QM_OIDC_ISSUER', 'QM_OIDC_CLIENT_ID', 'QM_OIDC_ALLOWED_EMAILS', 'QM_SECRET_KEY'}
+OIDC = AUTH | {'QM_OIDC_CLIENT_SECRET', 'QM_OIDC_REDIRECT_URI', 'QM_OIDC_REQUIRE_MFA', 'QM_OIDC_MFA_AMR', 'QM_OIDC_ACCEPTED_ACR', 'QM_OIDC_ACR_VALUES', 'QM_OIDC_PROVIDER_LOGOUT'}
+ALLOWED = OIDC | {'QM_MODE', 'QM_SERIAL_PORT', 'QM_SERIAL_BAUD', 'QM_WEB_PORT', 'QM_ENABLE_CONFIG_WRITES', 'QM_ENABLE_CLI', 'QM_HTTPS_ONLY', 'QM_CONNECT_TIMEOUT', 'QM_SWITCH_HOST', 'QM_SWITCH_PORT', 'QM_SWITCH_USER', 'QM_KNOWN_HOSTS', 'QM_SSH_KEY_FILE', 'QM_VIRTUAL_STATE'}
 
 def load_settings():
     values = {}
@@ -47,7 +48,7 @@ def main():
         from configure_login import main as configure
         if configure() != 0:
             return 2
-        os.environ.update({k: v for k, v in load_settings().items() if k in AUTH})
+        os.environ.update({k: v for k, v in load_settings().items() if k in OIDC})
     if os.environ['QM_MODE'] not in {'demo','serial','real','virtual'}:
         print('QM_MODE deve ser demo, virtual, serial ou real.', file=sys.stderr); return 2
     try:
@@ -64,9 +65,10 @@ def main():
         print('A porta já está ocupada por outro serviço ou por um Manager antigo. Encerre-o antes de iniciar.', file=sys.stderr); return 2
     except (URLError, OSError, ValueError, AttributeError):
         pass
-    from app import app, _auth_configured, start_live_monitor
+    from app import app, _auth_configured, oidc_settings, start_live_monitor
     if not _auth_configured():
-        print('Credenciais locais inválidas. Execute python start.py configure.', file=sys.stderr); return 2
+        problems = ' '.join(oidc_settings.problems()) or 'Defina QM_SECRET_KEY.'
+        print('Configuração SSO inválida: '+problems+' Execute python start.py configure.', file=sys.stderr); return 2
     from waitress import serve
     host = '0.0.0.0' if os.getenv('QM_CONTAINER') == '1' else '127.0.0.1'
     print('Quidway Manager: '+url+' | modo: '+os.environ['QM_MODE'], flush=True)

@@ -10,8 +10,9 @@
 # Gravações no switch começam bloqueadas; habilite só após revisar e validar o release.
 # $env:QM_ENABLE_CONFIG_WRITES = 'false'
 
-# Configure o login uma vez executando .\configure-login.ps1.
-# O assistente grava usuário, hash da senha e chave de sessão em local-settings.ps1.
+# Configure o login SSO uma vez executando .\configure-login.ps1 (ou python start.py configure).
+# O assistente grava QM_OIDC_ISSUER, QM_OIDC_CLIENT_ID, QM_OIDC_ALLOWED_EMAILS e a chave de sessão.
+# Nenhuma senha de usuário é armazenada: o login e o 2FA acontecem no provedor. Veja docs/login-sso.md.
 
 # Opção de rede SSHv2: configure apenas se o firmware aceitar os algoritmos SSH atuais.
 # $env:QM_MODE = 'real'

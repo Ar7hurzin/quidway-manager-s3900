@@ -36,7 +36,6 @@ cd ~/Projetos/quidway-manager-s3900
 .venv/bin/python -m unittest discover -s tests -v
 node --test tests/frontend_reliability.cjs
 node --check static/app.js
-node --check static/login.js
 .venv/bin/python -m pip check
 ```
 

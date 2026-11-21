@@ -4,7 +4,9 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-from test_manager import manager, PASSWORD
+from dataclasses import replace
+
+from test_manager import manager, login as sso_login
 from serial_cli import SerialCLISession
 from session_registry import SessionRegistry
 
@@ -18,12 +20,7 @@ class SessionSecurityTest(unittest.TestCase):
         self.addCleanup(self.serial_guard.stop)
 
     def login(self, client=None):
-        client = client or self.client
-        client.get('/login')
-        with client.session_transaction() as sess: token = sess['csrf_token']
-        response = client.post('/login', data={'username': 'test-admin', 'password': PASSWORD, 'csrf_token': token})
-        self.assertEqual(response.status_code, 302)
-        with client.session_transaction() as sess: return sess['csrf_token']
+        return sso_login(client or self.client)
 
     def test_logout_revokes_copied_cookie_but_not_another_login(self):
         csrf = self.login()
@@ -49,9 +46,9 @@ class SessionSecurityTest(unittest.TestCase):
         with patch.object(manager, '_session_registry', SessionRegistry()):
             self.assertEqual(self.client.get('/api/status').status_code, 401)
         self.login()
-        parts = manager.AUTH_PASSWORD_HASH.rsplit('$', 1)
-        changed = parts[0] + '$' + ('B' if parts[1][0] == 'A' else 'A') + parts[1][1:]
-        with patch.object(manager, 'AUTH_PASSWORD_HASH', changed):
+        # Changing who may sign in revokes sessions, even for accounts still allowed.
+        changed = replace(manager.oidc_settings, allowed_emails=manager.oidc_settings.allowed_emails + ('new@example.test',))
+        with patch.object(manager, 'oidc_settings', changed):
             self.assertEqual(self.client.get('/api/status').status_code, 401)
 
     def test_cli_status_validates_header_without_disclosing_token(self):

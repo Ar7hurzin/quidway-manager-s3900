@@ -3,10 +3,6 @@ from __future__ import annotations
 
 import os
 import atexit
-import base64
-import hashlib
-import hmac
-import re
 import secrets
 import threading
 import time
@@ -30,6 +26,7 @@ from physical_dashboard import PhysicalDashboard
 from live_monitor import LiveMonitor
 from lab_capture import record_lab_reading
 from session_registry import SessionRegistry
+from oidc_auth import OIDCClient, OIDCError, OIDCSettings
 
 physical_dashboard = PhysicalDashboard()
 
@@ -47,8 +44,10 @@ app.config.update(
     SESSION_COOKIE_SECURE=os.getenv("QM_HTTPS_ONLY", "false").lower() == "true",
     PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
 )
-AUTH_USERNAME = os.getenv("QM_AUTH_USERNAME", "").strip()
-AUTH_PASSWORD_HASH = os.getenv("QM_AUTH_PASSWORD_HASH", "").strip()
+# Sign-in is delegated to an OpenID Connect provider: no password or password
+# hash exists anywhere in this application.
+oidc_settings = OIDCSettings.from_environment()
+oidc_client = OIDCClient(oidc_settings)
 ACTIVE_SESSION_TTL_SECONDS = 5 * 60
 SESSION_MAX_AGE_SECONDS = 8 * 60 * 60
 _session_registry = SessionRegistry()
@@ -81,8 +80,14 @@ def _serial_exclusive(fn):
     return run
 
 
-LOGIN_PAGE = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf-token" content="{{ csrf_token }}"><title>Entrar · Quidway Manager</title><link rel="stylesheet" href="/static/styles.css?v=20261113-light-1"></head><body class="login-body"><main class="login-shell"><section class="login-hero"><div><div class="brand-mark">Q</div><h2>Gerencie sua infraestrutura de rede</h2><p>Quidway Manager · Huawei Quidway S3900<br>Monitoramento, diagnóstico e configuração em um único console.</p></div><small>CONSOLE DE GERENCIAMENTO PRIVADO</small></section><section class="login-card"><p class="card-overline">ACESSO PRIVADO</p><h1>Entrar</h1><p class="login-note">Use a conta local configurada neste computador.</p>{% if error %}<p class="login-error" role="alert">{{ error }}</p>{% endif %}<form method="post" action="/login"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Usuário<input name="username" autocomplete="username" required autofocus maxlength="64"></label><label>Senha<div class="password-field"><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024"><button id="show-password" type="button" class="button button-secondary" aria-pressed="false">Mostrar</button></div></label><button class="button button-primary" type="submit">Entrar</button></form><small>A sessão termina depois de 8 horas.</small></section></main><script src="/static/login.js?v=1" defer></script></body></html>"""
-SETUP_REQUIRED_PAGE = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Configurar acesso · Quidway Manager</title><link rel="stylesheet" href="/static/styles.css?v=20261113-light-1"></head><body class="login-body"><main class="card setup-card"><h1>Configure o login antes de iniciar</h1><p>O Quidway Manager está bloqueado até criar uma conta local. Execute o comando correspondente ao seu ambiente e reinicie o servidor.</p><p>Linux: <code>.venv/bin/python configure_login.py</code></p><p>Windows: <code>.\\configure-login.ps1</code></p><p>Docker: <code>docker compose run --rm app configure</code></p></main></body></html>"""
+LOGIN_PAGE = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf-token" content="{{ csrf_token }}"><title>Entrar · Quidway Manager</title><link rel="stylesheet" href="/static/styles.css?v=20261113-light-1"></head><body class="login-body"><main class="login-shell"><section class="login-hero"><div><div class="brand-mark">Q</div><h2>Gerencie sua infraestrutura de rede</h2><p>Quidway Manager · Huawei Quidway S3900<br>Monitoramento, diagnóstico e configuração em um único console.</p></div><small>CONSOLE DE GERENCIAMENTO PRIVADO</small></section><section class="login-card"><p class="card-overline">ACESSO PRIVADO · SSO</p><h1>Entrar</h1><p class="login-note">O login é feito no provedor da sua organização ({{ provider }}) com autenticação de dois fatores. Nenhuma senha é digitada ou guardada neste aplicativo.</p>{% if error %}<p class="login-error" role="alert">{{ error }}</p>{% endif %}<form method="post" action="/login"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button id="sso-login" class="button button-primary" type="submit" autofocus>Entrar com SSO</button></form><small>Somente contas autorizadas entram. A sessão termina depois de 8 horas.</small></section></main></body></html>"""
+SETUP_REQUIRED_PAGE = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Configurar acesso · Quidway Manager</title><link rel="stylesheet" href="/static/styles.css?v=20261113-light-1"></head><body class="login-body"><main class="card setup-card"><h1>Configure o login SSO antes de iniciar</h1><p>O Quidway Manager está bloqueado até que o provedor OpenID Connect (emissor, client ID e e-mails autorizados) seja configurado. Execute o comando correspondente ao seu ambiente e reinicie o servidor.</p><p>Linux: <code>.venv/bin/python start.py configure</code></p><p>Windows: <code>.\\configure-login.ps1</code></p><p>Docker: <code>docker compose run --rm app configure</code></p></main></body></html>"""
+
+
+def _render_login(error: str = "", status: int = 200):
+    token = session.setdefault("csrf_token", secrets.token_urlsafe(32))
+    provider = urlsplit(oidc_settings.issuer).hostname or "OpenID Connect"
+    return render_template_string(LOGIN_PAGE, csrf_token=token, error=error, provider=provider), status
 
 
 def _render_manager():
@@ -91,41 +96,24 @@ def _render_manager():
     return render_template_string(template, csrf_token=token)
 
 
-def _valid_password_hash(encoded: str) -> bool:
-    try:
-        algorithm, rounds_text, salt_text, expected_text = encoded.split("$", 3)
-        rounds = int(rounds_text)
-        if algorithm != "pbkdf2_sha256" or not 100_000 <= rounds <= 2_000_000:
-            return False
-        salt = base64.urlsafe_b64decode(salt_text + "=" * (-len(salt_text) % 4))
-        expected = base64.urlsafe_b64decode(expected_text + "=" * (-len(expected_text) % 4))
-        return len(salt) >= 16 and len(expected) == 32
-    except (ValueError, TypeError):
-        return False
-
-
-def _check_password(password: str) -> bool:
-    if not _valid_password_hash(AUTH_PASSWORD_HASH):
-        return False
-    _, rounds_text, salt_text, expected_text = AUTH_PASSWORD_HASH.split("$", 3)
-    rounds = int(rounds_text)
-    salt = base64.urlsafe_b64decode(salt_text + "=" * (-len(salt_text) % 4))
-    expected = base64.urlsafe_b64decode(expected_text + "=" * (-len(expected_text) % 4))
-    actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, rounds, dklen=32)
-    return hmac.compare_digest(actual, expected)
-
-
 def _auth_configured() -> bool:
-    return bool(re.fullmatch(r"[A-Za-z0-9_.-]{3,64}", AUTH_USERNAME) and _valid_password_hash(AUTH_PASSWORD_HASH) and os.getenv("QM_SECRET_KEY"))
+    return oidc_settings.configured() and bool(os.getenv("QM_SECRET_KEY"))
 
 
 def _safe_token_equal(supplied: object, expected: object) -> bool:
     return (isinstance(supplied, str) and isinstance(expected, str) and bool(expected)
-            and supplied.isascii() and expected.isascii() and hmac.compare_digest(supplied, expected))
+            and supplied.isascii() and expected.isascii() and secrets.compare_digest(supplied, expected))
 
 
 def _credential_version() -> str:
-    return hashlib.sha256((AUTH_USERNAME + "\0" + AUTH_PASSWORD_HASH).encode()).hexdigest()
+    # Changing the provider, client or allowlist revokes every existing session.
+    return oidc_settings.version()
+
+
+def _signed_in_user():
+    """The verified SSO e-mail of this browser session, or None."""
+    user = session.get("qm_user")
+    return user if oidc_settings.email_allowed(user) else None
 
 
 def _invalidate_browser_session() -> None:
@@ -143,8 +131,8 @@ def _invalidate_browser_session() -> None:
 
 def _touch_active_session() -> None:
     session_id = session.get("qm_session_id")
-    username = session.get("qm_user")
-    if not isinstance(session_id, str) or username != AUTH_USERNAME:
+    username = _signed_in_user()
+    if not isinstance(session_id, str) or username is None:
         return
     now = time.time()
     with _active_sessions_lock:
@@ -164,13 +152,18 @@ def require_login_and_csrf():
     if session.get("qm_user") is not None:
         logged_in_at = session.get("qm_login_time")
         now = time.time()
-        valid = (session.get("qm_user") == AUTH_USERNAME
+        user = _signed_in_user()
+        valid = (user is not None
                  and isinstance(logged_in_at, (int, float))
                  and 0 <= now - logged_in_at < SESSION_MAX_AGE_SECONDS
-                 and _session_registry.valid(session.get("qm_session_id"), AUTH_USERNAME,
+                 and _session_registry.valid(session.get("qm_session_id"), user,
                                              _credential_version()))
         if not valid:
             _invalidate_browser_session()
+
+    if request.path == "/auth/callback":
+        # Protected by the single-use OIDC state bound to this browser session.
+        return None
 
     if request.path == "/login":
         if request.method == "POST":
@@ -180,7 +173,7 @@ def require_login_and_csrf():
                 return "Token de formulário inválido. Atualize a página e tente novamente.", 400
         return None
 
-    if session.get("qm_user") != AUTH_USERNAME:
+    if _signed_in_user() is None:
         if request.path.startswith("/api/"):
             return jsonify({"ok": False, "error": "Sessão encerrada. Entre novamente."}), 401
         return redirect(url_for("login"))
@@ -295,40 +288,52 @@ def cli_page():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    if session.get("qm_user") == AUTH_USERNAME:
+    if _signed_in_user() is not None:
         return redirect(url_for("index"))
-    csrf_token = session.setdefault("csrf_token", secrets.token_urlsafe(32))
     if request.method == "POST":
+        # The CSRF check in require_login_and_csrf prevents forced (login-CSRF) sign-ins.
         if not _login_rate_allowed():
-            response = app.make_response((render_template_string(LOGIN_PAGE, csrf_token=csrf_token, error="Muitas tentativas. Aguarde um minuto e tente novamente."), 429))
+            response = app.make_response(_render_login("Muitas tentativas. Aguarde um minuto e tente novamente.", 429))
             response.headers["Retry-After"] = "60"
             return response
-        username = request.form.get("username", "")
-        password = request.form.get("password", "")
-        username_matches = username.isascii() and hmac.compare_digest(username, AUTH_USERNAME)
-        password_matches = len(password) <= 1024 and _check_password(password)
-        if username_matches and password_matches:
-            with _login_lock:
-                _login_attempts.pop(request.remote_addr or "local", None)
-            try:
-                session_id = _session_registry.issue(AUTH_USERNAME, _credential_version(), SESSION_MAX_AGE_SECONDS)
-            except ValueError as exc:
-                return render_template_string(LOGIN_PAGE, csrf_token=csrf_token, error=str(exc)), 503
-            _invalidate_browser_session()
-            session.permanent = True
-            session["qm_user"] = AUTH_USERNAME
-            session["qm_session_id"] = session_id
-            session["qm_login_time"] = time.time()
-            session["csrf_token"] = secrets.token_urlsafe(32)
-            return redirect(url_for("index"))
-        return render_template_string(LOGIN_PAGE, csrf_token=csrf_token, error="Usuário ou senha incorretos."), 401
-    return render_template_string(LOGIN_PAGE, csrf_token=csrf_token, error="")
+        try:
+            authorization_url, pending = oidc_client.begin()
+        except OIDCError as exc:
+            return _render_login(str(exc), 502)
+        session["qm_oidc_pending"] = pending
+        return redirect(authorization_url)
+    return _render_login()
+
+
+@app.get("/auth/callback")
+def auth_callback():
+    # Single use: a replayed or second callback finds no pending attempt.
+    pending = session.pop("qm_oidc_pending", None)
+    if _signed_in_user() is not None:
+        return redirect(url_for("index"))
+    try:
+        identity = oidc_client.complete(pending, request.args)
+    except OIDCError as exc:
+        return _render_login(str(exc), 401)
+    try:
+        session_id = _session_registry.issue(identity["email"], _credential_version(), SESSION_MAX_AGE_SECONDS)
+    except ValueError as exc:
+        return _render_login(str(exc), 503)
+    with _login_lock:
+        _login_attempts.pop(request.remote_addr or "local", None)
+    _invalidate_browser_session()
+    session.permanent = True
+    session["qm_user"] = identity["email"]
+    session["qm_session_id"] = session_id
+    session["qm_login_time"] = time.time()
+    session["csrf_token"] = secrets.token_urlsafe(32)
+    return redirect(url_for("index"))
 
 
 @app.post("/logout")
 def logout():
     _invalidate_browser_session()
-    return redirect(url_for("login"))
+    return redirect(oidc_client.logout_url() or url_for("login"))
 
 
 def _cli_request_allowed() -> bool:
@@ -366,13 +371,13 @@ def cli_open():
     try:
         owner = session.get("qm_session_id")
         result = cli_session.open(serial_settings(), owner_id=owner)
-        if not _session_registry.valid(owner, AUTH_USERNAME, _credential_version()):
+        if not _session_registry.valid(owner, session.get("qm_user"), _credential_version()):
             cli_session.request_close(result["token"])
             return jsonify({"ok": False, "error": "Sessão encerrada durante a abertura. Entre novamente."}), 401
         session["qm_cli_token"] = result["token"]
         return jsonify({"ok": True, **result})
     except (SerialCLIError, SerialReadOnlyError) as exc:
-        status_code = 503 if _session_registry.valid(session.get("qm_session_id"), AUTH_USERNAME, _credential_version()) else 401
+        status_code = 503 if _session_registry.valid(session.get("qm_session_id"), session.get("qm_user"), _credential_version()) else 401
         return jsonify({"ok": False, "error": str(exc)}), status_code
 
 

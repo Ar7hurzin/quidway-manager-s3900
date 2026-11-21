@@ -3,7 +3,7 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from test_manager import manager, PASSWORD
+from test_manager import manager, login as sso_login
 from serial_cli import SerialCLISession
 
 
@@ -23,10 +23,7 @@ class CLIOwnershipTest(unittest.TestCase):
         self.csrf = self.login(self.client)
 
     def login(self, client):
-        client.get('/login')
-        with client.session_transaction() as sess: csrf = sess['csrf_token']
-        self.assertEqual(client.post('/login', data={'username':'test-admin', 'password':PASSWORD, 'csrf_token':csrf}).status_code, 302)
-        with client.session_transaction() as sess: return sess['csrf_token']
+        return sso_login(client)
 
     def clone_browser_session(self):
         other = manager.app.test_client()

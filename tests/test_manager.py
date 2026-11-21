@@ -1,26 +1,27 @@
 """Functional regression checks; no network or physical switch required."""
-import base64
-import hashlib
 import os
 import secrets
 import unittest
 from unittest.mock import patch
 
-PASSWORD = 'local-test-only-123456'
-SALT = secrets.token_bytes(16)
-def b64(value): return base64.urlsafe_b64encode(value).decode().rstrip('=')
-os.environ.update(QM_AUTH_USERNAME='test-admin', QM_AUTH_PASSWORD_HASH='pbkdf2_sha256$600000$'+b64(SALT)+'$'+b64(hashlib.pbkdf2_hmac('sha256', PASSWORD.encode(), SALT, 600000)), QM_SECRET_KEY=secrets.token_urlsafe(48), QM_MODE='demo', QM_ENABLE_CONFIG_WRITES='false', QM_ENABLE_CLI='false')
+from oidc_fake import ENV, provider, sso_login
+
+os.environ.update(ENV, QM_SECRET_KEY=secrets.token_urlsafe(48), QM_MODE='demo', QM_ENABLE_CONFIG_WRITES='false', QM_ENABLE_CLI='false')
 import app as manager
+
+
+def login(client):
+    """Sign in through the fake SSO provider; returns the new CSRF token."""
+    response = sso_login(client)
+    assert response.status_code == 302 and response.headers['Location'] == '/', (response.status_code, response.data[:300])
+    with client.session_transaction() as sess: return sess['csrf_token']
 
 class ManagerTest(unittest.TestCase):
     def setUp(self):
         manager._login_attempts.clear()
         self.client = manager.app.test_client()
     def login(self):
-        self.client.get('/login')
-        with self.client.session_transaction() as sess: token = sess['csrf_token']
-        self.assertEqual(self.client.post('/login', data={'username':'test-admin','password':PASSWORD,'csrf_token':token}).status_code, 302)
-        with self.client.session_transaction() as sess: return sess['csrf_token']
+        return login(self.client)
     def test_public_health(self):
         result=self.client.get('/api/health').get_json()
         self.assertTrue(result['auth_configured']); self.assertEqual(result['mode'],'demo')
@@ -28,25 +29,26 @@ class ManagerTest(unittest.TestCase):
         self.assertEqual(self.client.get('/').status_code,302)
         self.assertEqual(self.client.get('/api/status').status_code,401)
     def test_login_and_pages(self):
-        login=self.client.get('/login'); self.assertIn(b'show-password',login.data)
+        page=self.client.get('/login'); self.assertIn(b'sso-login',page.data); self.assertNotIn(b'type="password"',page.data)
         self.login()
         for page in ('/','/sistema','/monitoramento','/configuracao','/cli','/api/status','/api/demo','/api/config/status','/api/cli/status','/api/connections'):
             with self.subTest(page=page): self.assertEqual(self.client.get(page).status_code,200)
-        for path in ('/static/styles.css','/static/login.js'):
+        for path in ('/static/styles.css','/static/app.js'):
             response = self.client.get(path)
             try: self.assertEqual(response.status_code,200)
             finally: response.close()
     def test_login_csrf_and_logout(self):
-        self.assertEqual(self.client.post('/login',data={'username':'test-admin','password':PASSWORD}).status_code,400)
+        self.assertEqual(self.client.post('/login',data={}).status_code,400)
         token=self.login()
         self.assertEqual(self.client.post('/logout').status_code,400)
         self.assertEqual(self.client.post('/logout',data={'csrf_token':token}).status_code,302)
         self.assertEqual(self.client.get('/api/demo').status_code,401)
-    def test_invalid_credentials_and_rate_limit(self):
+    def test_login_rate_limit(self):
         self.client.get('/login')
         with self.client.session_transaction() as sess: token=sess['csrf_token']
-        for _ in range(8): self.assertEqual(self.client.post('/login',data={'username':'test-admin','password':'wrong','csrf_token':token}).status_code,401)
-        self.assertEqual(self.client.post('/login',data={'username':'test-admin','password':PASSWORD,'csrf_token':token}).status_code,429)
+        with provider():
+            for _ in range(8): self.assertEqual(self.client.post('/login',data={'csrf_token':token}).status_code,302)
+            self.assertEqual(self.client.post('/login',data={'csrf_token':token}).status_code,429)
     def test_demo_and_write_guards(self):
         token=self.login(); headers={'X-CSRF-Token':token}
         self.assertEqual(self.client.post('/api/refresh',json={},headers=headers).status_code,200)
@@ -66,7 +68,7 @@ class ManagerTest(unittest.TestCase):
         self.assertEqual(self.client.get('/api/status').status_code,401)
     def test_unicode_csrf_rejected(self):
         self.client.get("/login")
-        self.assertEqual(self.client.post("/login", data={"username":"test-admin","password":PASSWORD,"csrf_token":"ç"}).status_code,400)
+        self.assertEqual(self.client.post("/login", data={"csrf_token":"ç"}).status_code,400)
 
     def test_secure_headers(self):
         response=self.client.get('/login')

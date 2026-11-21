@@ -36,7 +36,7 @@ Na primeira vez, execute:
 
     .\configure-login.ps1
 
-Escolha um usuário e uma senha com pelo menos 12 caracteres. A senha é digitada sem aparecer na tela. O arquivo local-settings.ps1 guarda apenas o hash da senha e uma chave aleatória da sessão; ele é ignorado pelo Git.
+O login é por SSO (OpenID Connect) com 2FA no provedor da organização; nenhuma senha de usuário é pedida ou gravada. O assistente pede o issuer, o client ID e os e-mails autorizados (veja docs/login-sso.md). O arquivo local-settings.ps1 guarda só essa configuração e uma chave aleatória da sessão; ele é ignorado pelo Git.
 
 PASSO 4 — INICIE E CONSULTE
 No PowerShell, na pasta do projeto, execute:

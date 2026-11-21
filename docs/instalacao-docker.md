@@ -15,7 +15,7 @@ cd quidway-manager-s3900
 git switch feature/s3900-virtual
 ```
 
-O código já contém o painel, arquivos estáticos, scripts e documentação. O arquivo `local-settings.ps1` não vem do GitHub: ele contém o hash de senha e a chave de sessão e deve permanecer local. Não copie seu ambiente `.venv` de Windows para Linux.
+O código já contém o painel, arquivos estáticos, scripts e documentação. O arquivo `local-settings.ps1` não vem do GitHub: ele contém a configuração SSO (issuer, client ID/secret, e-mails autorizados) e a chave de sessão e deve permanecer local. Não copie seu ambiente `.venv` de Windows para Linux.
 
 ## 2. Windows — execução nativa (PowerShell)
 
@@ -28,7 +28,7 @@ py -3 -m venv .venv
 .\.venv\Scripts\python.exe start.py
 ```
 
-Alternativamente, use `.\configure-login.ps1` e `.\start.ps1`. Se a política local impedir scripts PowerShell, prefira os comandos Python acima em vez de desabilitar a proteção do sistema. Cadastre um usuário (por exemplo `admin`) e uma senha longa, exclusiva e de pelo menos 12 caracteres. A senha não é exibida durante a digitação em um terminal interativo. Abra http://127.0.0.1:8787/login. Pressione Ctrl+C para encerrar.
+Alternativamente, use `.\configure-login.ps1` e `.\start.ps1`. Se a política local impedir scripts PowerShell, prefira os comandos Python acima em vez de desabilitar a proteção do sistema. Informe o provedor SSO e os e-mails autorizados ([login SSO com 2FA](login-sso.md)); nenhuma senha de usuário é cadastrada. Abra http://127.0.0.1:8787/login. Pressione Ctrl+C para encerrar.
 
 ## 3. Fedora/Linux — execução nativa
 
@@ -68,7 +68,7 @@ docker compose ps
 docker compose logs -f app
 ```
 
-O segundo comando abre a configuração interativa; defina usuário e senha. Não use redirecionamento de senha nem coloque credenciais na linha de comando. O volume nomeado `qm-data` mantém `local-settings.ps1` com hash PBKDF2 e chave de sessão fora da imagem e do Git. O container roda com usuário não-root. A porta publicada está limitada a `127.0.0.1` do host. Abra http://127.0.0.1:8787/login (ou a porta alternativa que escolheu). O indicador de saúde confirma que o login está configurado; não comprova que o switch físico está disponível.
+O segundo comando abre a configuração interativa do SSO ([login SSO com 2FA](login-sso.md)). Não coloque o client secret na linha de comando. O volume nomeado `qm-data` mantém `local-settings.ps1` com a configuração SSO e a chave de sessão fora da imagem e do Git. O container roda com usuário não-root. A porta publicada está limitada a `127.0.0.1` do host. Abra http://127.0.0.1:8787/login (ou a porta alternativa que escolheu). O indicador de saúde confirma que o login está configurado; não comprova que o switch físico está disponível.
 
 Operação diária:
 
@@ -152,7 +152,6 @@ Instale Tailscale no **host** que executa o Manager e no dispositivo cliente. Au
 ```bash
 python -m unittest discover -s tests -v
 node --check static/app.js
-node --check static/login.js
 ```
 
-Use o Python do ambiente virtual. Os testes cobrem login, CSRF, expiração, bloqueio de escrita/CLI, rate limiting, APIs e páginas. Testes de contêiner verificam instalação, login e persistência. Não são pentest formal ou certificação NIST/OWASP. A autenticação local continua de uma única conta, sem MFA ou RBAC completo; a proteção e auditoria precisam ser ampliadas antes de um cenário multiusuário de produção. Windows requer validação no host e no Docker Desktop; switch real precisa ser testado separadamente. O modo demo e os testes de software não confirmam portas, VLANs, SNMP, SSH legado, comandos de alteração ou recuperação do VRP real.
+Use o Python do ambiente virtual. Os testes cobrem login, CSRF, expiração, bloqueio de escrita/CLI, rate limiting, APIs e páginas. Testes de contêiner verificam instalação, login e persistência. Não são pentest formal ou certificação NIST/OWASP. A autenticação é SSO com 2FA e allowlist de e-mails, ainda sem RBAC; a proteção e auditoria precisam ser ampliadas antes de um cenário multiusuário de produção. Windows requer validação no host e no Docker Desktop; switch real precisa ser testado separadamente. O modo demo e os testes de software não confirmam portas, VLANs, SNMP, SSH legado, comandos de alteração ou recuperação do VRP real.

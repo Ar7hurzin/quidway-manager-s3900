@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from test_manager import manager, PASSWORD
+from test_manager import manager, login
 from serial_config import execute_plan, prepare_plan
 from serial_readonly import SerialSettings
 from switch_config import build_plan
@@ -29,10 +29,7 @@ class PreviewTransitionTest(unittest.TestCase):
             self.addCleanup(guard.stop)
         self.client = manager.app.test_client()
         manager._login_attempts.clear()
-        self.client.get('/login')
-        with self.client.session_transaction() as sess: csrf = sess['csrf_token']
-        self.assertEqual(self.client.post('/login', data={'username':'test-admin', 'password':PASSWORD, 'csrf_token':csrf}).status_code, 302)
-        with self.client.session_transaction() as sess: self.headers = {'X-CSRF-Token':sess['csrf_token']}
+        self.headers = {'X-CSRF-Token': login(self.client)}
         self.settings = SerialSettings('virtual', 9600, 3, virtual=True)
 
     def apply_direct(self, action, **params):

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from test_manager import manager, PASSWORD
+from test_manager import manager, login
 from serial_readonly import SerialSettings, collect_serial_diagnostics
 from serial_config import prepare_plan, execute_plan, export_current_configuration
 from switch_config import build_plan, ConfigurationError
@@ -66,10 +66,7 @@ class VirtualTest(unittest.TestCase):
         manager._login_attempts.clear()
         c=manager.app.test_client()
         self.assertEqual(c.get("/api/virtual/state").status_code,401)
-        c.get("/login")
-        with c.session_transaction() as sess: token=sess["csrf_token"]
-        self.assertEqual(c.post("/login",data={"username":"test-admin","password":PASSWORD,"csrf_token":token}).status_code,302)
-        with c.session_transaction() as sess: headers={"X-CSRF-Token":sess["csrf_token"]}
+        headers={"X-CSRF-Token":login(c)}
         self.assertEqual(c.get("/api/status").json["mode"],"virtual")
         self.assertTrue(c.get("/api/config/status").json["writes_enabled"])
         missing=c.post("/api/config/preview",json={"action":"set_management_ip","vlan_id":2,"ip":"192.168.100.1","prefix":24},headers=headers)

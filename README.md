@@ -27,19 +27,19 @@ Para os comandos de uso diário e instalação em cada sistema, consulte [Comand
 A interface **Quidway Light** usa tema claro e o mesmo endereço local. Há um inicializador Python compartilhado para Windows/Linux; consulte [instalação nativa e Docker](docs/instalacao-docker.md) para comandos de instalação, autenticação, Docker Compose e limitações.
 
 
-Na primeira execução, abra a pasta `QuidwayManager` no VS Code. No terminal PowerShell dessa pasta, configure o login local:
+Na primeira execução, abra a pasta `QuidwayManager` no VS Code. No terminal PowerShell dessa pasta, configure o login SSO:
 
 ```powershell
 .\configure-login.ps1
 ```
 
-Escolha um usuário e uma senha com pelo menos 12 caracteres. A senha é digitada sem aparecer na tela; o arquivo `local-settings.ps1` recebe somente o hash PBKDF2, uma chave de sessão aleatória e o nome de usuário. Esse arquivo está ignorado pelo Git. Depois inicie o app:
+O login é feito por **SSO (OpenID Connect) com autenticação de dois fatores** no provedor da organização (Entra ID, Keycloak, Authentik…). Nenhuma senha de usuário é pedida ou gravada. O assistente pede o issuer, o client ID, os e-mails autorizados e a redirect URI a cadastrar no provedor. O arquivo `local-settings.ps1`, ignorado pelo Git, recebe só essas informações e uma chave de sessão aleatória. Veja [login SSO com 2FA](docs/login-sso.md). Depois inicie o app:
 
 ```powershell
 .\start.ps1
 ```
 
-O script prepara as bibliotecas na primeira execução e inicia o servidor. Abra `http://127.0.0.1:8787` no navegador e entre com a conta que criou. A sessão expira em oito horas; use **Sair** para revogá-la imediatamente no servidor. Reiniciar o servidor ou reconfigurar o login exige entrar novamente. O registro de autorização é separado da presença recente de cinco minutos e requer a execução em um único processo, como no inicializador fornecido. Deixe a janela do terminal aberta enquanto usar o app; pressione `Ctrl+C` para encerrá-lo. Se o app já estiver rodando, o script verifica se a versão ativa exige login antes de reutilizá-la.
+O script prepara as bibliotecas na primeira execução e inicia o servidor. Abra `http://127.0.0.1:8787` no navegador e clique em **Entrar com SSO**. A sessão expira em oito horas; use **Sair** para revogá-la imediatamente no servidor. Reiniciar o servidor ou reconfigurar o login exige entrar novamente. O registro de autorização é separado da presença recente de cinco minutos e requer a execução em um único processo, como no inicializador fornecido. Deixe a janela do terminal aberta enquanto usar o app; pressione `Ctrl+C` para encerrá-lo. Se o app já estiver rodando, o script verifica se a versão ativa exige login antes de reutilizá-la.
 
 ## Acesso privado remoto pelo Tailscale
 
@@ -100,7 +100,7 @@ Feche e inicie novamente o app após alterar configurações. No modo SSH, use *
 ## Limites de segurança
 
 - A área de configuração guiada não aceita comandos livres; a CLI tem habilitação separada. As operações tipadas de configuração só podem ser enviadas quando `QM_ENABLE_CONFIG_WRITES=true`; por padrão, a gravação permanece bloqueada.
-- Todas as páginas e APIs de operação exigem login local. A sessão usa cookie HttpOnly, SameSite=Lax, proteção CSRF e expira após oito horas. O login limita tentativas por endereço de origem; sob proxy os usuários podem compartilhar esse limite. HTTPS pode usar `QM_HTTPS_ONLY=true` para cookies Secure (não habilite no acesso HTTP local). O endpoint de saúde fica público apenas para o script local verificar se o serviço iniciou.
+- Todas as páginas e APIs de operação exigem login SSO (OpenID Connect) com 2FA comprovado no token e e-mail na allowlist; nenhuma senha é armazenada. A sessão usa cookie HttpOnly, SameSite=Lax, proteção CSRF e expira após oito horas. O login limita tentativas por endereço de origem; sob proxy os usuários podem compartilhar esse limite. HTTPS pode usar `QM_HTTPS_ONLY=true` para cookies Secure (não habilite no acesso HTTP local). O endpoint de saúde fica público apenas para o script local verificar se o serviço iniciou.
 - Mantenha o servidor nativo em `127.0.0.1`; Docker usa porta interna publicada somente no loopback do host. O acesso remoto privado é intermediado pelo Tailscale Serve.
 - As regras de acesso da tailnet continuam sendo uma camada necessária; limite o acesso aos seus dispositivos/usuários autorizados.
 - Não crie encaminhamento de porta no roteador nem publique o painel com Tailscale Funnel.
@@ -129,7 +129,6 @@ As sete falhas da revisão de 16/11 foram tratadas nesta cópia local. Leia [cor
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
 node --check static/app.js
-node --check static/login.js
 node --test tests/frontend*.cjs
 .venv/bin/python -m pip check
 ```

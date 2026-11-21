@@ -9,7 +9,7 @@ cd ~/Projetos/quidway-manager-s3900
 .venv/bin/python start-linux.py
 ```
 
-Abra **http://127.0.0.1:8787/login** no navegador e use o login cadastrado. Mantenha o terminal aberto; encerre com Ctrl+C no terminal que iniciou o servidor. Se já estiver rodando, o inicializador informa isso; apenas abra o navegador. Não use o botão Run do `app.py`, pois ele não carrega automaticamente o arquivo de configuração local.
+Abra **http://127.0.0.1:8787/login** no navegador e clique em **Entrar com SSO**. Mantenha o terminal aberto; encerre com Ctrl+C no terminal que iniciou o servidor. Se já estiver rodando, o inicializador informa isso; apenas abra o navegador. Não use o botão Run do `app.py`, pois ele não carrega automaticamente o arquivo de configuração local.
 
 ### Recuperar ou atualizar pelo GitHub
 
@@ -36,7 +36,7 @@ git pull --ff-only
 .venv/bin/python start.py
 ```
 
-Para redefinir usuário e senha, encerre o servidor, execute `.venv/bin/python start.py configure` e inicie novamente. Não apague nem envie `local-settings.ps1` ao GitHub.
+Para trocar o provedor SSO ou os e-mails autorizados, encerre o servidor, execute `.venv/bin/python start.py configure` e inicie novamente. Não apague nem envie `local-settings.ps1` ao GitHub.
 
 ## Windows (PowerShell do VS Code)
 
@@ -50,7 +50,7 @@ py -3 -m venv .venv
 .\.venv\Scripts\python.exe start.py
 ```
 
-Nas próximas execuções basta `.\.venv\Scripts\python.exe start.py`. Se já tiver uma conta local, não execute `configure` novamente. Use o mesmo endereço no navegador.
+Nas próximas execuções basta `.\.venv\Scripts\python.exe start.py`. Se o SSO já estiver configurado, não execute `configure` novamente. Use o mesmo endereço no navegador.
 
 ## Docker (terminal Bash ou PowerShell com Docker Compose V2)
 
